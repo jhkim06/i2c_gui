@@ -28,7 +28,9 @@ class i2c_connection():
         logging.basicConfig(format='%(asctime)s - %(levelname)s:%(name)s:%(message)s', stream=sys.stdout, force=True)
         logger = logging.getLogger("Script_Logger")
         self.chip_logger = logging.getLogger("Chip_Logger")
-        self.conn = i2c_gui2.USB_ISS_Helper(port, clock, dummy_connect = False)
+        self.conn = i2c_gui2.USB_ISS_Helper(port, clock, dummy_connect = False) 
+        # TODO: use RPI_I2C_Helper
+        # self.conn = i2c_gui2.RPI_I2C_Helper() 
         logger.setLevel(log_level)
 
         self.BL_df = {}
