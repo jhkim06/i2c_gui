@@ -10,10 +10,12 @@ import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 
+from .i2c_rpi_helper import RPI_I2C_Helper 
+
 class i2c_connection():
     _chips = None
 
-    def __init__(self, port, chip_addresses, ws_addresses, chip_names, clock = 100):
+    def __init__(self, port, chip_addresses, ws_addresses, chip_names, clock = 100, use_usb_iss=True):
         self.chip_addresses = chip_addresses
         self.ws_addresses = ws_addresses
         self.chip_names = chip_names
@@ -28,9 +30,10 @@ class i2c_connection():
         logging.basicConfig(format='%(asctime)s - %(levelname)s:%(name)s:%(message)s', stream=sys.stdout, force=True)
         logger = logging.getLogger("Script_Logger")
         self.chip_logger = logging.getLogger("Chip_Logger")
-        self.conn = i2c_gui2.USB_ISS_Helper(port, clock, dummy_connect = False) 
-        # TODO: use RPI_I2C_Helper
-        # self.conn = i2c_gui2.RPI_I2C_Helper() 
+        if use_usb_iss:
+            self.conn = i2c_gui2.USB_ISS_Helper(port, clock, dummy_connect = False) 
+        else:
+            self.conn = RPI_I2C_Helper() 
         logger.setLevel(log_level)
 
         self.BL_df = {}
