@@ -1,9 +1,20 @@
+import argparse
 import i2c_gui2_helpers as helpers
 import datetime
 import numpy as np
 from tqdm import tqdm
 
-chip_names = ["test"]
+
+# --------------------------
+# Argument parser
+# --------------------------
+parser = argparse.ArgumentParser(description="ETROC calibration script")
+
+parser.add_argument("--chip_name", type=str, default="test", help="Name of the chip")
+parser.add_argument("--save_notes", type=str, default="", help="Extra notes for saving")
+args = parser.parse_args()
+
+chip_names = [args.chip_name]
 port = "/dev/ttyACM0"
 chip_addresses = [0x60]
 ws_addresses = [None] * len(chip_addresses)
@@ -30,4 +41,6 @@ i2c_conn.config_chips(
 
 ### Save BL and NW
 now = datetime.datetime.now().isoformat(sep=' ', timespec='seconds')
-i2c_conn.save_baselines(hist_dir='/home/ellie/ETL/i2c_gui/helpers/output', save_notes=f'{now}')
+full_notes = f"{args.save_notes}" if args.save_notes else now
+
+i2c_conn.save_baselines(hist_dir='/home/ellie/ETL/i2c_gui/helpers/output', save_notes=full_notes)
