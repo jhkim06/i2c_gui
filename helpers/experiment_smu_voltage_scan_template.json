@@ -1,0 +1,18 @@
+{
+  "chip_name": "ETROC2_TEST",
+  "save_notes": "smu_bias_scan",
+  "current_limit": 0.0001,
+  "settle": 1.0,
+  "cycle_delay": 0.0,
+  "check_etroc": true,
+  "etroc_i2c_bus": 1,
+  "etroc_i2c_address": "0x60",
+  "voltages": [
+    0,
+    -1,
+    -2,
+    -3,
+    -4,
+    -5
+  ]
+}
