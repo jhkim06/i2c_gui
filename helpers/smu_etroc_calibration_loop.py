@@ -3,8 +3,8 @@
 
 The script can run in two modes:
   - SMU mode: Keithley is connected, so voltage is applied and current is recorded.
-  - No-SMU mode: Keithley is missing/disabled, so ETROC calibration still runs and
-    the CSV/logs are written with empty current readings.
+  - No-SMU mode: Keithley is missing/disabled, so ETROC calibration still runs,
+    but no IV/current CSV is written.
 
 For each experiment step:
   1. Set Keithley bias voltage and current compliance.
@@ -398,9 +398,7 @@ def main() -> int:
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_stamp = timestamp_for_file()
-    csv_path = output_dir / f"smu_etroc_calibration_loop_{run_stamp}.csv"
-
+    csv_path: Path | None = None
     rows: list[dict[str, object]] = []
     exit_code = 0
     stop_scan = False
@@ -531,34 +529,37 @@ def main() -> int:
                 after_time = timestamp_iso()
                 smu_errors = []
 
-            row = {
-                "step": step_index,
-                "step_start": step_start,
-                "before_time": before_time,
-                "after_time": after_time,
-                "applied_voltage_V": voltage,
-                "current_limit_A": current_limit,
-                "smu_connected": smu is not None,
-                "smu_idn": smu_idn,
-                "smu_note": smu_note,
-                "before_current_A": before_current,
-                "after_current_A": after_current,
-                "before_raw": before_raw,
-                "after_raw": after_raw,
-                "calibration_status": calibration_status,
-                "calibration_returncode": calibration_returncode,
-                "calibration_log": str(log_path),
-                "save_notes": step_notes,
-                "smu_errors": " | ".join(smu_errors),
-            }
-            rows.append(row)
+            if smu is not None:
+                if csv_path is None:
+                    run_stamp = timestamp_for_file()
+                    csv_path = output_dir / f"smu_etroc_calibration_loop_{run_stamp}.csv"
 
-            # Write CSV every step so partial results survive failures/Ctrl-C.
-            with csv_path.open("w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-                writer.writeheader()
-                writer.writerows(rows)
-            print(f"Updated CSV: {csv_path}")
+                row = {
+                    "step": step_index,
+                    "step_start": step_start,
+                    "before_time": before_time,
+                    "after_time": after_time,
+                    "applied_voltage_V": voltage,
+                    "current_limit_A": current_limit,
+                    "smu_idn": smu_idn,
+                    "before_current_A": before_current,
+                    "after_current_A": after_current,
+                    "before_raw": before_raw,
+                    "after_raw": after_raw,
+                    "calibration_status": calibration_status,
+                    "calibration_returncode": calibration_returncode,
+                    "calibration_log": str(log_path),
+                    "save_notes": step_notes,
+                    "smu_errors": " | ".join(smu_errors),
+                }
+                rows.append(row)
+
+                # Write CSV every step so partial IV results survive failures/Ctrl-C.
+                with csv_path.open("w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+                    writer.writeheader()
+                    writer.writerows(rows)
+                print(f"Updated IV CSV: {csv_path}")
 
             if calibration_status != "ok":
                 exit_code = 4
@@ -589,7 +590,10 @@ def main() -> int:
                     print(f"Warning: failed to turn output off: {exc}", file=sys.stderr)
             smu.close()
 
-    print(f"Final CSV: {csv_path}")
+    if csv_path is not None:
+        print(f"Final IV CSV: {csv_path}")
+    else:
+        print("No SMU was used; no IV CSV written.")
     print("Done")
     return exit_code
 
