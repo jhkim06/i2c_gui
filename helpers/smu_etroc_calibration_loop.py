@@ -74,6 +74,7 @@ from typing import Any
 HELPERS_DIR = Path(__file__).resolve().parent
 DEFAULT_DEVICE = "/dev/usbtmc0"
 DEFAULT_OUTPUT_DIR = HELPERS_DIR / "output"
+DEFAULT_FIGURE_ROOT = HELPERS_DIR.parent / "ETROC-figures"
 DEFAULT_I2C_SCRIPT = HELPERS_DIR / "i2c_test_with_rpi.py"
 DEFAULT_CURRENT_LIMIT = 100e-6
 DEFAULT_SETTLE = 1.0
@@ -336,6 +337,11 @@ def safe_filename_part(value: str) -> str:
     """Return a compact filesystem-safe label for filenames."""
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
     return "_".join(part for part in safe.split("_") if part) or "scan"
+
+
+def etroc_figure_dir() -> Path:
+    """Return the same dated figure directory used by save_baselines()."""
+    return DEFAULT_FIGURE_ROOT / f"{dt.date.today().isoformat()}_Array_Test_Results"
 
 
 def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> None:
@@ -641,7 +647,7 @@ def main() -> int:
                     csv_path = output_dir / f"smu_etroc_calibration_loop_{iv_stamp}.csv"
                     iv_sqlite_path = output_dir / "IVHistory.sqlite"
                     plot_label = safe_filename_part(f"{chip_name}_{save_notes}" if save_notes else chip_name)
-                    iv_plot_path = output_dir / f"{plot_label}_IV_curve_{iv_stamp}.png"
+                    iv_plot_path = etroc_figure_dir() / f"{plot_label}_IV_curve_{iv_stamp}.png"
 
                 row = {
                     "run_timestamp": iv_stamp,
