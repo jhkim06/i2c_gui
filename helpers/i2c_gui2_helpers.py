@@ -704,6 +704,12 @@ class i2c_connection():
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
         for idx, chip_address in enumerate(self.chip_addresses):
+            chip_name = self.chip_names[idx]
+            safe_chip_name = ''.join(ch if ch.isalnum() or ch in {'-', '_'} else '_' for ch in chip_name.strip())
+            safe_chip_name = '_'.join(part for part in safe_chip_name.split('_') if part) or 'chip'
+            chip_fig_outdir = fig_outdir / safe_chip_name
+            chip_fig_outdir.mkdir(exist_ok=True, parents=True)
+
 
             current_df = self.BL_df[chip_address]
             pivot_df = current_df.pivot(index=['row'], columns=['col'], values=['baseline', 'noise_width'])
@@ -714,10 +720,10 @@ class i2c_connection():
                 current_df.to_sql('baselines', sqlconn, if_exists='append', index=False)
 
             ## Make BL and NW 2D map
-            self.make_BL_NW_2D_maps(pivot_df, self.chip_names[idx], save_notes, fig_outdir, timestamp)
+            self.make_BL_NW_2D_maps(pivot_df, chip_name, save_notes, chip_fig_outdir, timestamp)
 
             ## Make BL and NW 1D hist
-            self.make_BL_NW_1D_hists(current_df, self.chip_names[idx], save_notes, fig_outdir, timestamp)
+            self.make_BL_NW_1D_hists(current_df, chip_name, save_notes, chip_fig_outdir, timestamp)
 
 
     #--------------------------------------------------------------------------#

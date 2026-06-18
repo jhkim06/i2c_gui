@@ -380,9 +380,12 @@ def safe_filename_part(value: str) -> str:
     return "_".join(part for part in safe.split("_") if part) or "scan"
 
 
-def etroc_figure_dir() -> Path:
+def etroc_figure_dir(chip_name: str | None = None) -> Path:
     """Return the same dated figure directory used by save_baselines()."""
-    return DEFAULT_FIGURE_ROOT / f"{dt.date.today().isoformat()}_Array_Test_Results"
+    fig_dir = DEFAULT_FIGURE_ROOT / f"{dt.date.today().isoformat()}_Array_Test_Results"
+    if chip_name:
+        fig_dir = fig_dir / safe_filename_part(chip_name)
+    return fig_dir
 
 
 def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> None:
@@ -688,7 +691,7 @@ def main() -> int:
                     csv_path = output_dir / f"smu_etroc_calibration_loop_{iv_stamp}.csv"
                     iv_sqlite_path = output_dir / "IVHistory.sqlite"
                     plot_label = safe_filename_part(f"{chip_name}_{save_notes}" if save_notes else chip_name)
-                    iv_plot_path = etroc_figure_dir() / f"{plot_label}_IV_curve_{iv_stamp}.png"
+                    iv_plot_path = etroc_figure_dir(chip_name) / f"{plot_label}_IV_curve_{iv_stamp}.png"
 
                 row = {
                     "run_timestamp": iv_stamp,
