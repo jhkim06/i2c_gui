@@ -315,16 +315,18 @@ def run_calibration(
     start_line = f"$ {' '.join(cmd)}\n\n"
     log_path.write_text(start_line)
 
-    output_lines: list[str] = []
-    with log_path.open("a") as f:
-        f.write("--- OUTPUT ---\n")
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    output_chunks: list[bytes] = []
+    with log_path.open("ab") as f:
+        f.write(b"--- OUTPUT ---\n")
         proc = subprocess.Popen(
             cmd,
             cwd=str(i2c_script.parent),
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            bufsize=1,
+            bufsize=0,
         )
 
         assert proc.stdout is not None
@@ -338,32 +340,38 @@ def run_calibration(
                 if timeout_s is not None and (time.monotonic() - start_time) > timeout_s:
                     proc.kill()
                     proc.wait()
-                    output = "".join(output_lines)
-                    f.write(f"\n--- TIMEOUT AFTER {timeout_s} s ---\n")
+                    output = b"".join(output_chunks).decode(errors="replace")
+                    f.write(f"\n--- TIMEOUT AFTER {timeout_s} s ---\n".encode())
                     raise subprocess.TimeoutExpired(cmd, timeout_s, output=output)
 
                 events = selector.select(timeout=0.1)
                 for key, _ in events:
-                    line = key.fileobj.readline()
-                    if line:
-                        print(line, end="", flush=True)
-                        f.write(line)
+                    chunk = os.read(key.fileobj.fileno(), 4096)
+                    if chunk:
+                        sys.stdout.buffer.write(chunk)
+                        sys.stdout.buffer.flush()
+                        f.write(chunk)
                         f.flush()
-                        output_lines.append(line)
+                        output_chunks.append(chunk)
 
                 if proc.poll() is not None:
                     # Drain any remaining buffered output after process exit.
-                    for remaining_line in proc.stdout:
-                        print(remaining_line, end="", flush=True)
-                        f.write(remaining_line)
-                        output_lines.append(remaining_line)
+                    while True:
+                        chunk = proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        sys.stdout.buffer.write(chunk)
+                        sys.stdout.buffer.flush()
+                        f.write(chunk)
+                        output_chunks.append(chunk)
                     break
         finally:
             proc.stdout.close()
 
-        f.write(f"\n--- RETURN CODE: {proc.returncode} ---\n")
+        f.write(f"\n--- RETURN CODE: {proc.returncode} ---\n".encode())
 
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout="".join(output_lines), stderr="")
+    output_text = b"".join(output_chunks).decode(errors="replace")
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout=output_text, stderr="")
 
 
 def safe_filename_part(value: str) -> str:
