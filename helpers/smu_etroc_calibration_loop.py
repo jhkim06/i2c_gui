@@ -458,19 +458,26 @@ def plot_iv_curve(
     if not valid_rows:
         return
 
-    voltage = [float(row["applied_voltage_V"]) for row in valid_rows]
-    current = [row.get("before_current_A") for row in valid_rows]
+    points = sorted(
+        (
+            abs(float(row["applied_voltage_V"])),
+            abs(float(row["before_current_A"])) * 1e6,
+        )
+        for row in valid_rows
+    )
+    hv = [point[0] for point in points]
+    current_uA = [point[1] for point in points]
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(voltage, current, "o-", label="Current before calibration")
-    ax.set_xlabel("Applied voltage [V]")
-    ax.set_ylabel("Measured current [A]")
-    title = f"{chip_name}: IV curve"
+    ax.plot(hv, current_uA, "-", color="#4285F4", linewidth=2.0)
+    ax.set_xlabel("HV (V)")
+    ax.set_ylabel(f"{chip_name} current (µA)")
+    title = f"{chip_name} vs HV (V)"
     if save_notes:
         title += f"\n{save_notes}"
     ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-    ax.legend()
+    ax.grid(True, color="#d9d9d9", linewidth=1.0)
+    ax.set_axisbelow(True)
     fig.tight_layout()
     plot_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(plot_path, dpi=150)
