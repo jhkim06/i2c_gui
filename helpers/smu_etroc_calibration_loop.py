@@ -683,11 +683,8 @@ def main() -> int:
 
     if csv_path is not None:
         if iv_plot_path is not None:
-            try:
-                plot_iv_curve(rows, iv_plot_path)
-                print(f"Final IV plot: {iv_plot_path}")
-            except Exception as exc:  # noqa: BLE001
-                print(f"Warning: failed to draw IV plot: {exc}", file=sys.stderr)
+            plot_iv_curve(rows, iv_plot_path)
+            print(f"Final IV plot: {iv_plot_path}")
         print(f"Final IV CSV: {csv_path}")
         if iv_sqlite_path is not None:
             print(f"Final IV SQLite: {iv_sqlite_path}")
