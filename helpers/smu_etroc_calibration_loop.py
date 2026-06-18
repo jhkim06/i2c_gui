@@ -12,10 +12,9 @@ For each experiment step:
   3. Record current before calibration.
   4. Run i2c_test_with_rpi.py and wait until it finishes.
      That script saves baseline/noise-width SQLite results and plots.
-  5. Record current after calibration.
-  6. Append IV measurements to cumulative IVHistory.sqlite, save per-scan IV CSV,
-     and save per-step calibration log.
-  7. Draw an IV curve plot after the voltage scan is done.
+  5. Append pre-calibration IV measurements to cumulative IVHistory.sqlite,
+     save per-scan IV CSV, and save per-step calibration log.
+  6. Draw an IV curve plot from the pre-calibration currents after the voltage scan is done.
 
 Recommended JSON config format:
   {
@@ -404,14 +403,11 @@ def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> Non
                 step INTEGER NOT NULL,
                 step_start TEXT,
                 before_time TEXT,
-                after_time TEXT,
                 applied_voltage_V REAL,
                 current_limit_A REAL,
                 smu_idn TEXT,
                 before_current_A REAL,
-                after_current_A REAL,
                 before_raw TEXT,
-                after_raw TEXT,
                 calibration_status TEXT,
                 calibration_returncode TEXT,
                 calibration_log TEXT,
@@ -424,16 +420,16 @@ def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> Non
             """
             INSERT OR REPLACE INTO iv_measurements (
                 run_timestamp, chip_name, save_notes, step,
-                step_start, before_time, after_time,
+                step_start, before_time,
                 applied_voltage_V, current_limit_A, smu_idn,
-                before_current_A, after_current_A, before_raw, after_raw,
+                before_current_A, before_raw,
                 calibration_status, calibration_returncode, calibration_log,
                 smu_errors
             ) VALUES (
                 :run_timestamp, :chip_name, :save_notes, :step,
-                :step_start, :before_time, :after_time,
+                :step_start, :before_time,
                 :applied_voltage_V, :current_limit_A, :smu_idn,
-                :before_current_A, :after_current_A, :before_raw, :after_raw,
+                :before_current_A, :before_raw,
                 :calibration_status, :calibration_returncode, :calibration_log,
                 :smu_errors
             )
@@ -449,7 +445,7 @@ def plot_iv_curve(
     chip_name: str,
     save_notes: str,
 ) -> None:
-    """Draw before/after-calibration IV curves from collected SMU rows."""
+    """Draw an IV curve from pre-calibration SMU current readings."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -457,18 +453,16 @@ def plot_iv_curve(
 
     valid_rows = [
         row for row in rows
-        if row.get("before_current_A") is not None or row.get("after_current_A") is not None
+        if row.get("before_current_A") is not None
     ]
     if not valid_rows:
         return
 
     voltage = [float(row["applied_voltage_V"]) for row in valid_rows]
-    before = [row.get("before_current_A") for row in valid_rows]
-    after = [row.get("after_current_A") for row in valid_rows]
+    current = [row.get("before_current_A") for row in valid_rows]
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(voltage, before, "o-", label="Before calibration")
-    ax.plot(voltage, after, "s-", label="After calibration")
+    ax.plot(voltage, current, "o-", label="Current before calibration")
     ax.set_xlabel("Applied voltage [V]")
     ax.set_ylabel("Measured current [A]")
     title = f"{chip_name}: IV curve"
@@ -670,20 +664,12 @@ def main() -> int:
             print(f"Calibration finished: {calibration_status}; log={log_path}")
 
             if smu is not None:
-                print("Reading current after calibration")
-                after_current, after_raw = read_current(smu)
-                after_time = timestamp_iso()
-                print(f"After: I={after_current} A raw={after_raw}")
-
                 smu_errors = drain_error_queue(smu)
                 if smu_errors:
                     print("Keithley errors after step:", file=sys.stderr)
                     for err in smu_errors:
                         print(f"  {err}", file=sys.stderr)
             else:
-                after_current = None
-                after_raw = "NO_SMU"
-                after_time = timestamp_iso()
                 smu_errors = []
 
             if smu is not None:
@@ -699,14 +685,11 @@ def main() -> int:
                     "step": step_index,
                     "step_start": step_start,
                     "before_time": before_time,
-                    "after_time": after_time,
                     "applied_voltage_V": voltage,
                     "current_limit_A": current_limit,
                     "smu_idn": smu_idn,
                     "before_current_A": before_current,
-                    "after_current_A": after_current,
                     "before_raw": before_raw,
-                    "after_raw": after_raw,
                     "calibration_status": calibration_status,
                     "calibration_returncode": calibration_returncode,
                     "calibration_log": str(log_path),
