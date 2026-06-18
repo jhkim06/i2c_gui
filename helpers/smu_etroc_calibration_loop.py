@@ -13,7 +13,8 @@ For each experiment step:
   4. Run i2c_test_with_rpi.py and wait until it finishes.
      That script saves baseline/noise-width SQLite results and plots.
   5. Record current after calibration.
-  6. Save IV CSV + IV SQLite summary and per-step calibration log.
+  6. Append IV measurements to cumulative IVHistory.sqlite, save per-scan IV CSV,
+     and save per-step calibration log.
   7. Draw an IV curve plot after the voltage scan is done.
 
 Recommended JSON config format:
@@ -331,8 +332,14 @@ def run_calibration(
     return proc
 
 
+def safe_filename_part(value: str) -> str:
+    """Return a compact filesystem-safe label for filenames."""
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
+    return "_".join(part for part in safe.split("_") if part) or "scan"
+
+
 def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> None:
-    """Write IV rows to a dedicated SQLite file for this voltage scan."""
+    """Append/update IV rows in a cumulative SQLite file, like BaselineHistory.sqlite."""
     import sqlite3
 
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,7 +347,11 @@ def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> Non
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS iv_measurements (
-                step INTEGER PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                chip_name TEXT,
+                save_notes TEXT,
+                step INTEGER NOT NULL,
                 step_start TEXT,
                 before_time TEXT,
                 after_time TEXT,
@@ -354,33 +365,40 @@ def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> Non
                 calibration_status TEXT,
                 calibration_returncode TEXT,
                 calibration_log TEXT,
-                save_notes TEXT,
-                smu_errors TEXT
+                smu_errors TEXT,
+                UNIQUE(run_timestamp, step)
             )
             """
         )
-        conn.execute("DELETE FROM iv_measurements")
         conn.executemany(
             """
-            INSERT INTO iv_measurements (
-                step, step_start, before_time, after_time,
+            INSERT OR REPLACE INTO iv_measurements (
+                run_timestamp, chip_name, save_notes, step,
+                step_start, before_time, after_time,
                 applied_voltage_V, current_limit_A, smu_idn,
                 before_current_A, after_current_A, before_raw, after_raw,
                 calibration_status, calibration_returncode, calibration_log,
-                save_notes, smu_errors
+                smu_errors
             ) VALUES (
-                :step, :step_start, :before_time, :after_time,
+                :run_timestamp, :chip_name, :save_notes, :step,
+                :step_start, :before_time, :after_time,
                 :applied_voltage_V, :current_limit_A, :smu_idn,
                 :before_current_A, :after_current_A, :before_raw, :after_raw,
                 :calibration_status, :calibration_returncode, :calibration_log,
-                :save_notes, :smu_errors
+                :smu_errors
             )
             """,
             rows,
         )
 
 
-def plot_iv_curve(rows: list[dict[str, object]], plot_path: Path) -> None:
+def plot_iv_curve(
+    rows: list[dict[str, object]],
+    plot_path: Path,
+    *,
+    chip_name: str,
+    save_notes: str,
+) -> None:
     """Draw before/after-calibration IV curves from collected SMU rows."""
     import matplotlib
 
@@ -403,7 +421,10 @@ def plot_iv_curve(rows: list[dict[str, object]], plot_path: Path) -> None:
     ax.plot(voltage, after, "s-", label="After calibration")
     ax.set_xlabel("Applied voltage [V]")
     ax.set_ylabel("Measured current [A]")
-    ax.set_title("IV curve")
+    title = f"{chip_name}: IV curve"
+    if save_notes:
+        title += f"\n{save_notes}"
+    ax.set_title(title)
     ax.grid(True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
@@ -618,10 +639,13 @@ def main() -> int:
             if smu is not None:
                 if csv_path is None:
                     csv_path = output_dir / f"smu_etroc_calibration_loop_{iv_stamp}.csv"
-                    iv_sqlite_path = output_dir / f"smu_iv_measurements_{iv_stamp}.sqlite"
-                    iv_plot_path = output_dir / f"smu_iv_curve_{iv_stamp}.png"
+                    iv_sqlite_path = output_dir / "IVHistory.sqlite"
+                    plot_label = safe_filename_part(f"{chip_name}_{save_notes}" if save_notes else chip_name)
+                    iv_plot_path = output_dir / f"{plot_label}_IV_curve_{iv_stamp}.png"
 
                 row = {
+                    "run_timestamp": iv_stamp,
+                    "chip_name": chip_name,
                     "step": step_index,
                     "step_start": step_start,
                     "before_time": before_time,
@@ -683,7 +707,7 @@ def main() -> int:
 
     if csv_path is not None:
         if iv_plot_path is not None:
-            plot_iv_curve(rows, iv_plot_path)
+            plot_iv_curve(rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes)
             print(f"Final IV plot: {iv_plot_path}")
         print(f"Final IV CSV: {csv_path}")
         if iv_sqlite_path is not None:
