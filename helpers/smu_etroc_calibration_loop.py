@@ -4,15 +4,17 @@
 The script can run in two modes:
   - SMU mode: Keithley is connected, so voltage is applied and current is recorded.
   - No-SMU mode: Keithley is missing/disabled, so ETROC calibration still runs,
-    but no IV/current CSV is written.
+    but no IV/current CSV, SQLite, or plot is written.
 
 For each experiment step:
   1. Set Keithley bias voltage and current compliance.
   2. Enable output.
   3. Record current before calibration.
   4. Run i2c_test_with_rpi.py and wait until it finishes.
+     That script saves baseline/noise-width SQLite results and plots.
   5. Record current after calibration.
-  6. Save CSV summary and per-step calibration log.
+  6. Save IV CSV + IV SQLite summary and per-step calibration log.
+  7. Draw an IV curve plot after the voltage scan is done.
 
 Recommended JSON config format:
   {
@@ -329,6 +331,87 @@ def run_calibration(
     return proc
 
 
+def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> None:
+    """Write IV rows to a dedicated SQLite file for this voltage scan."""
+    import sqlite3
+
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS iv_measurements (
+                step INTEGER PRIMARY KEY,
+                step_start TEXT,
+                before_time TEXT,
+                after_time TEXT,
+                applied_voltage_V REAL,
+                current_limit_A REAL,
+                smu_idn TEXT,
+                before_current_A REAL,
+                after_current_A REAL,
+                before_raw TEXT,
+                after_raw TEXT,
+                calibration_status TEXT,
+                calibration_returncode TEXT,
+                calibration_log TEXT,
+                save_notes TEXT,
+                smu_errors TEXT
+            )
+            """
+        )
+        conn.execute("DELETE FROM iv_measurements")
+        conn.executemany(
+            """
+            INSERT INTO iv_measurements (
+                step, step_start, before_time, after_time,
+                applied_voltage_V, current_limit_A, smu_idn,
+                before_current_A, after_current_A, before_raw, after_raw,
+                calibration_status, calibration_returncode, calibration_log,
+                save_notes, smu_errors
+            ) VALUES (
+                :step, :step_start, :before_time, :after_time,
+                :applied_voltage_V, :current_limit_A, :smu_idn,
+                :before_current_A, :after_current_A, :before_raw, :after_raw,
+                :calibration_status, :calibration_returncode, :calibration_log,
+                :save_notes, :smu_errors
+            )
+            """,
+            rows,
+        )
+
+
+def plot_iv_curve(rows: list[dict[str, object]], plot_path: Path) -> None:
+    """Draw before/after-calibration IV curves from collected SMU rows."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    valid_rows = [
+        row for row in rows
+        if row.get("before_current_A") is not None or row.get("after_current_A") is not None
+    ]
+    if not valid_rows:
+        return
+
+    voltage = [float(row["applied_voltage_V"]) for row in valid_rows]
+    before = [row.get("before_current_A") for row in valid_rows]
+    after = [row.get("after_current_A") for row in valid_rows]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(voltage, before, "o-", label="Before calibration")
+    ax.plot(voltage, after, "s-", label="After calibration")
+    ax.set_xlabel("Applied voltage [V]")
+    ax.set_ylabel("Measured current [A]")
+    ax.set_title("IV curve")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    plot_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Loop Keithley bias/current recording around ETROC auto-calibration"
@@ -398,7 +481,10 @@ def main() -> int:
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    iv_stamp = timestamp_for_file()
     csv_path: Path | None = None
+    iv_sqlite_path: Path | None = None
+    iv_plot_path: Path | None = None
     rows: list[dict[str, object]] = []
     exit_code = 0
     stop_scan = False
@@ -531,8 +617,9 @@ def main() -> int:
 
             if smu is not None:
                 if csv_path is None:
-                    run_stamp = timestamp_for_file()
-                    csv_path = output_dir / f"smu_etroc_calibration_loop_{run_stamp}.csv"
+                    csv_path = output_dir / f"smu_etroc_calibration_loop_{iv_stamp}.csv"
+                    iv_sqlite_path = output_dir / f"smu_iv_measurements_{iv_stamp}.sqlite"
+                    iv_plot_path = output_dir / f"smu_iv_curve_{iv_stamp}.png"
 
                 row = {
                     "step": step_index,
@@ -560,6 +647,10 @@ def main() -> int:
                     writer.writeheader()
                     writer.writerows(rows)
                 print(f"Updated IV CSV: {csv_path}")
+
+                if iv_sqlite_path is not None:
+                    save_iv_rows_sqlite(iv_sqlite_path, rows)
+                    print(f"Updated IV SQLite: {iv_sqlite_path}")
 
             if calibration_status != "ok":
                 exit_code = 4
@@ -591,9 +682,17 @@ def main() -> int:
             smu.close()
 
     if csv_path is not None:
+        if iv_plot_path is not None:
+            try:
+                plot_iv_curve(rows, iv_plot_path)
+                print(f"Final IV plot: {iv_plot_path}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"Warning: failed to draw IV plot: {exc}", file=sys.stderr)
         print(f"Final IV CSV: {csv_path}")
+        if iv_sqlite_path is not None:
+            print(f"Final IV SQLite: {iv_sqlite_path}")
     else:
-        print("No SMU was used; no IV CSV written.")
+        print("No SMU was used; no IV CSV, SQLite, or plot written.")
     print("Done")
     return exit_code
 
