@@ -701,7 +701,7 @@ class i2c_connection():
         fig_outdir = fig_outdir / (datetime.date.today().isoformat() + '_Array_Test_Results')
         fig_outdir.mkdir(exist_ok=True, parents=True)
 
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
         for idx, chip_address in enumerate(self.chip_addresses):
 
