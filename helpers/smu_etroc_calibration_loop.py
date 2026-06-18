@@ -315,22 +315,55 @@ def run_calibration(
     start_line = f"$ {' '.join(cmd)}\n\n"
     log_path.write_text(start_line)
 
-    proc = subprocess.run(
-        cmd,
-        cwd=str(i2c_script.parent),
-        text=True,
-        capture_output=True,
-        timeout=timeout_s,
-    )
-
+    output_lines: list[str] = []
     with log_path.open("a") as f:
-        f.write("--- STDOUT ---\n")
-        f.write(proc.stdout)
-        f.write("\n--- STDERR ---\n")
-        f.write(proc.stderr)
+        f.write("--- OUTPUT ---\n")
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(i2c_script.parent),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+
+        assert proc.stdout is not None
+        try:
+            import selectors
+
+            selector = selectors.DefaultSelector()
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            start_time = time.monotonic()
+            while True:
+                if timeout_s is not None and (time.monotonic() - start_time) > timeout_s:
+                    proc.kill()
+                    proc.wait()
+                    output = "".join(output_lines)
+                    f.write(f"\n--- TIMEOUT AFTER {timeout_s} s ---\n")
+                    raise subprocess.TimeoutExpired(cmd, timeout_s, output=output)
+
+                events = selector.select(timeout=0.1)
+                for key, _ in events:
+                    line = key.fileobj.readline()
+                    if line:
+                        print(line, end="", flush=True)
+                        f.write(line)
+                        f.flush()
+                        output_lines.append(line)
+
+                if proc.poll() is not None:
+                    # Drain any remaining buffered output after process exit.
+                    for remaining_line in proc.stdout:
+                        print(remaining_line, end="", flush=True)
+                        f.write(remaining_line)
+                        output_lines.append(remaining_line)
+                    break
+        finally:
+            proc.stdout.close()
+
         f.write(f"\n--- RETURN CODE: {proc.returncode} ---\n")
 
-    return proc
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout="".join(output_lines), stderr="")
 
 
 def safe_filename_part(value: str) -> str:
