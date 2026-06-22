@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Keithley 2470 + ETROC calibration loop with JSON experiment config.
+"""ETROC auto-calibration loop with optional SMU bias control.
 
 The script can run in two modes:
-  - SMU mode: Keithley is connected, so voltage is applied and current is recorded.
+  - SMU mode: a supported SMU driver is loaded, so voltage is applied and current is recorded.
   - No-SMU mode: Keithley is missing/disabled, so ETROC calibration still runs,
     but no IV/current CSV, SQLite, or plot is written.
 
 For each experiment step:
-  1. Set Keithley bias voltage and current compliance.
+  1. Set SMU bias voltage and current compliance.
   2. Enable output.
   3. Record current before calibration.
   4. Run i2c_test_with_rpi.py and wait until it finishes.
@@ -24,6 +24,7 @@ Recommended JSON config format:
     "settle": 1.0,
     "cycle_delay": 0.0,
     "check_etroc": true,
+    "smu_driver": "keithley",
     "etroc_i2c_bus": 1,
     "etroc_i2c_address": "0x60",
     "voltages": [-2, -3, -4, -5]
@@ -52,6 +53,7 @@ Safety:
   - SMU output is turned OFF when changing voltage.
   - SMU output is turned OFF at the end, including on Ctrl-C or failures.
   - Current compliance defaults to 100 uA if not specified.
+  - SMU-specific code lives in separate driver modules, currently smu_keithley.py.
   - If the SMU is not connected, the script automatically falls back to no-SMU
     mode unless --require-smu (or JSON require_smu=true) is set.
 """
@@ -69,9 +71,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from smu_keithley import DEFAULT_DEVICE, connect_keithley
+
 
 HELPERS_DIR = Path(__file__).resolve().parent
-DEFAULT_DEVICE = "/dev/usbtmc0"
 DEFAULT_OUTPUT_DIR = HELPERS_DIR / "output"
 DEFAULT_FIGURE_ROOT = HELPERS_DIR.parent / "ETROC-figures"
 DEFAULT_I2C_SCRIPT = HELPERS_DIR / "i2c_test_with_rpi.py"
@@ -81,99 +84,6 @@ DEFAULT_CYCLE_DELAY = 0.0
 DEFAULT_CHIP_NAME = "test"
 DEFAULT_ETROC_I2C_BUS = 1
 DEFAULT_ETROC_I2C_ADDRESS = 0x60
-
-
-class KeithleyUSBTMC:
-    """Small line-oriented USBTMC wrapper for SCPI commands."""
-
-    def __init__(self, device: str = DEFAULT_DEVICE):
-        self.device = device
-        self._fh = None
-
-    def __enter__(self) -> "KeithleyUSBTMC":
-        self.open()
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-    def open(self) -> None:
-        if not os.path.exists(self.device):
-            raise FileNotFoundError(
-                f"{self.device} not found. Is the Keithley connected and powered on?"
-            )
-        self._fh = open(self.device, "r+b", buffering=0)
-
-    def close(self) -> None:
-        if self._fh is not None:
-            self._fh.close()
-            self._fh = None
-
-    def write(self, cmd: str) -> None:
-        if self._fh is None:
-            raise RuntimeError("Keithley device is not open")
-        self._fh.write((cmd.rstrip() + "\n").encode("ascii"))
-
-    def read(self, max_bytes: int = 4096) -> str:
-        if self._fh is None:
-            raise RuntimeError("Keithley device is not open")
-        return self._fh.read(max_bytes).decode(errors="replace").strip()
-
-    def query(self, cmd: str, delay_s: float = 0.05) -> str:
-        self.write(cmd)
-        time.sleep(delay_s)
-        return self.read()
-
-
-def parse_first_float(response: str) -> float | None:
-    for token in response.replace(";", ",").split(","):
-        token = token.strip()
-        if not token:
-            continue
-        try:
-            return float(token)
-        except ValueError:
-            continue
-    return None
-
-
-def drain_error_queue(smu: KeithleyUSBTMC, max_reads: int = 10) -> list[str]:
-    errors: list[str] = []
-    for _ in range(max_reads):
-        err = smu.query(":SYST:ERR?", delay_s=0.05)
-        if err.startswith("0"):
-            break
-        errors.append(err)
-    return errors
-
-
-def configure_voltage_source(smu: KeithleyUSBTMC, voltage: float, current_limit: float) -> None:
-    # Conservative Keithley 2470 SCPI set known to work on firmware 1.7.7b.
-    smu.write(":OUTP OFF")
-    smu.write(":SOUR:FUNC VOLT")
-    smu.write(":SOUR:VOLT:RANG:AUTO ON")
-    smu.write(f":SOUR:VOLT {voltage}")
-    smu.write(f":SOUR:VOLT:ILIM {current_limit}")
-    smu.write(":SENS:CURR:RANG:AUTO ON")
-
-
-def read_current(smu: KeithleyUSBTMC) -> tuple[float | None, str]:
-    raw = smu.query(":MEAS:CURR?", delay_s=0.15)
-    return parse_first_float(raw), raw
-
-
-def connect_keithley(device: str) -> tuple[KeithleyUSBTMC, str]:
-    """Open the Keithley and query *IDN? so connection problems are caught early."""
-    smu = KeithleyUSBTMC(device)
-    try:
-        smu.open()
-        idn = smu.query("*IDN?")
-        if not idn:
-            raise RuntimeError("Keithley opened but did not respond to *IDN?")
-        return smu, idn
-    except Exception:
-        smu.close()
-        raise
 
 
 def voltage_tag(voltage: float) -> str:
@@ -231,6 +141,17 @@ def cfg_value(config: dict[str, Any], key: str, cli_value: Any, default: Any) ->
     if cli_value is not None:
         return cli_value
     return config.get(key, default)
+
+
+def connect_smu_driver(driver: str, device: str):
+    """Connect a supported SMU driver.
+
+    Keep the dispatch small so adding CAEN later only needs a new module and one
+    branch here, while no-SMU calibration remains independent of any hardware.
+    """
+    if driver == "keithley":
+        return connect_keithley(device)
+    raise ValueError(f"Unsupported SMU driver: {driver}")
 
 
 def build_steps(config: dict[str, Any], cli_voltage: float | None, cli_voltages: list[float] | None, cli_current_limit: float | None) -> list[dict[str, float]]:
@@ -489,7 +410,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Loop Keithley bias/current recording around ETROC auto-calibration"
     )
     parser.add_argument("--config", type=Path, default=None, help="JSON experiment config file")
-    parser.add_argument("--device", default=None, help="Keithley USBTMC device path")
+    parser.add_argument("--device", default=None, help="SMU device path (Keithley USBTMC by default)")
+    parser.add_argument("--smu-driver", default=None, choices=["keithley"], help="SMU driver to use. Default/config: keithley")
     parser.add_argument("--voltage", type=float, default=None, help="Single bias voltage [V], e.g. -5")
     parser.add_argument("--voltages", type=float, nargs="+", default=None, help="Voltage scan list [V], e.g. --voltages -2 -3 -4 -5")
     parser.add_argument("--current-limit", type=float, default=None, help="Shared current compliance/current limit [A], e.g. 100e-6")
@@ -517,6 +439,7 @@ def main() -> int:
     config = load_json_config(args.config)
 
     device = cfg_value(config, "device", args.device, DEFAULT_DEVICE)
+    smu_driver = str(cfg_value(config, "smu_driver", args.smu_driver, "keithley")).lower()
     settle = float(cfg_value(config, "settle", args.settle, DEFAULT_SETTLE))
     cycle_delay = float(cfg_value(config, "cycle_delay", args.cycle_delay, DEFAULT_CYCLE_DELAY))
     chip_name = str(cfg_value(config, "chip_name", args.chip_name, DEFAULT_CHIP_NAME))
@@ -547,6 +470,7 @@ def main() -> int:
     print(f"save_notes={save_notes}")
     print(f"settle={settle:g} s, cycle_delay={cycle_delay:g} s")
     print(f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}")
+    print(f"SMU driver={smu_driver}, device={device}")
 
     if args.dry_config:
         print("Dry config check only; SMU/calibration not started.")
@@ -564,7 +488,7 @@ def main() -> int:
 
     no_smu_requested = bool(config.get("no_smu", False)) or args.no_smu
     require_smu = bool(config.get("require_smu", False)) or args.require_smu
-    smu: KeithleyUSBTMC | None = None
+    smu = None
     smu_idn = ""
     smu_note = ""
 
@@ -572,9 +496,10 @@ def main() -> int:
         smu_note = "No-SMU mode requested; Keithley connection skipped."
         print(smu_note)
     else:
-        print(f"Checking Keithley connection at {device}")
+        print(f"Checking {smu_driver} SMU connection at {device}")
         try:
-            smu, smu_idn = connect_keithley(device)
+            smu = connect_smu_driver(smu_driver, device)
+            smu_idn = smu.idn
             print(f"SMU connected. IDN: {smu_idn}")
         except Exception as exc:  # noqa: BLE001
             smu_note = f"SMU not available ({exc}); continuing in no-SMU mode."
@@ -585,7 +510,7 @@ def main() -> int:
 
     try:
         if smu is not None:
-            old_errors = drain_error_queue(smu)
+            old_errors = smu.drain_errors()
             if old_errors:
                 print("Cleared old Keithley error queue entries:")
                 for err in old_errors:
@@ -607,7 +532,7 @@ def main() -> int:
                 if not connected:
                     print("ETROC2 is not connected/responding. Quitting.", file=sys.stderr)
                     if smu is not None:
-                        smu.write(":OUTP OFF")
+                        smu.output_off()
                     return 5
 
             if smu is not None:
@@ -615,8 +540,8 @@ def main() -> int:
                     f"Configuring voltage source: voltage={voltage:g} V, "
                     f"current_limit={current_limit:g} A"
                 )
-                configure_voltage_source(smu, voltage, current_limit)
-                setup_errors = drain_error_queue(smu)
+                smu.configure_voltage(voltage, current_limit)
+                setup_errors = smu.drain_errors()
                 if setup_errors:
                     print("Keithley setup errors:", file=sys.stderr)
                     for err in setup_errors:
@@ -624,7 +549,7 @@ def main() -> int:
                     return 3
 
                 print("Enabling SMU output")
-                smu.write(":OUTP ON")
+                smu.output_on()
                 time.sleep(settle)
             else:
                 print("No SMU connected: skipping voltage setup, output enable, and current readings")
@@ -638,7 +563,7 @@ def main() -> int:
 
             if smu is not None:
                 print(f"Reading current before calibration at Vset={voltage:g} V")
-                before_current, before_raw = read_current(smu)
+                before_current, before_raw = smu.read_current()
                 before_time = timestamp_iso()
                 print(f"Before: I={before_current} A raw={before_raw}")
             else:
@@ -671,7 +596,7 @@ def main() -> int:
             print(f"Calibration finished: {calibration_status}; log={log_path}")
 
             if smu is not None:
-                smu_errors = drain_error_queue(smu)
+                smu_errors = smu.drain_errors()
                 if smu_errors:
                     print("Keithley errors after step:", file=sys.stderr)
                     for err in smu_errors:
@@ -724,7 +649,7 @@ def main() -> int:
 
             if smu is not None:
                 print("Turning output OFF before next step")
-                smu.write(":OUTP OFF")
+                smu.output_off()
 
             if not stop_scan and step_index != total_steps and cycle_delay > 0:
                 print(f"Waiting {cycle_delay:g} s before next step")
@@ -740,7 +665,7 @@ def main() -> int:
             else:
                 print("Turning SMU output OFF")
                 try:
-                    smu.write(":OUTP OFF")
+                    smu.output_off()
                 except Exception as exc:  # noqa: BLE001
                     print(f"Warning: failed to turn output off: {exc}", file=sys.stderr)
             smu.close()
