@@ -25,10 +25,13 @@ Recommended JSON config format:
     "cycle_delay": 0.0,
     "check_etroc": true,
     "smu_driver": "keithley",
+    "smu_channel": 3,
     "etroc_i2c_bus": 1,
     "etroc_i2c_address": "0x60",
     "voltages": [-2, -3, -4, -5]
   }
+
+Use "smu_driver": "caen" and "smu_channel": 3 for CAEN NDT1470 CH3.
 
 For different current limit per voltage, use explicit steps:
   {
@@ -48,6 +51,10 @@ Run with config:
 
 Run without config:
   python smu_etroc_calibration_loop.py --voltages -2 -3 -4 -5 --current-limit 100e-6
+
+Run with CAEN NDT1470 CH3:
+  python smu_etroc_calibration_loop.py --smu-driver caen --channel 3 \
+    --voltages -50 -100 -150 --current-limit 100e-6
 
 Safety:
   - SMU output is turned OFF when changing voltage.
@@ -71,7 +78,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from smu_keithley import DEFAULT_DEVICE, connect_keithley
+from smu_caen import DEFAULT_BOARD as CAEN_DEFAULT_BOARD
+from smu_caen import DEFAULT_BAUDRATE as CAEN_DEFAULT_BAUDRATE
+from smu_caen import DEFAULT_CHANNEL as CAEN_DEFAULT_CHANNEL
+from smu_caen import DEFAULT_DEVICE as CAEN_DEFAULT_DEVICE
+from smu_caen import connect_caen
+from smu_keithley import DEFAULT_DEVICE as KEITHLEY_DEFAULT_DEVICE
+from smu_keithley import connect_keithley
 
 
 HELPERS_DIR = Path(__file__).resolve().parent
@@ -143,7 +156,23 @@ def cfg_value(config: dict[str, Any], key: str, cli_value: Any, default: Any) ->
     return config.get(key, default)
 
 
-def connect_smu_driver(driver: str, device: str):
+def default_device_for_driver(driver: str) -> str:
+    if driver == "caen":
+        return CAEN_DEFAULT_DEVICE
+    if driver == "keithley":
+        return KEITHLEY_DEFAULT_DEVICE
+    raise ValueError(f"Unsupported SMU driver: {driver}")
+
+
+def connect_smu_driver(
+    driver: str,
+    device: str,
+    *,
+    channel: int | None = None,
+    board: int = CAEN_DEFAULT_BOARD,
+    baudrate: int = CAEN_DEFAULT_BAUDRATE,
+    voltage_magnitude: bool = True,
+):
     """Connect a supported SMU driver.
 
     Keep the dispatch small so adding CAEN later only needs a new module and one
@@ -151,6 +180,14 @@ def connect_smu_driver(driver: str, device: str):
     """
     if driver == "keithley":
         return connect_keithley(device)
+    if driver == "caen":
+        return connect_caen(
+            device,
+            channel=CAEN_DEFAULT_CHANNEL if channel is None else channel,
+            board=board,
+            baudrate=baudrate,
+            voltage_magnitude=voltage_magnitude,
+        )
     raise ValueError(f"Unsupported SMU driver: {driver}")
 
 
@@ -407,11 +444,15 @@ def plot_iv_curve(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Loop Keithley bias/current recording around ETROC auto-calibration"
+        description="Loop optional SMU bias/current recording around ETROC auto-calibration"
     )
     parser.add_argument("--config", type=Path, default=None, help="JSON experiment config file")
-    parser.add_argument("--device", default=None, help="SMU device path (Keithley USBTMC by default)")
-    parser.add_argument("--smu-driver", default=None, choices=["keithley"], help="SMU driver to use. Default/config: keithley")
+    parser.add_argument("--device", default=None, help="SMU device path. Driver-specific default when omitted.")
+    parser.add_argument("--smu-driver", default=None, choices=["keithley", "caen"], help="SMU driver to use. Default/config: keithley")
+    parser.add_argument("--channel", type=int, default=None, help="SMU channel for multi-channel supplies, e.g. CAEN CH3")
+    parser.add_argument("--caen-board", type=int, default=None, help="CAEN board address. Default/config: 0")
+    parser.add_argument("--caen-baudrate", type=int, default=None, help="CAEN serial baudrate. Default/config: 9600")
+    parser.add_argument("--caen-signed-voltage", action="store_true", help="Send signed voltage to CAEN VSET instead of abs(voltage). Default sends magnitude.")
     parser.add_argument("--voltage", type=float, default=None, help="Single bias voltage [V], e.g. -5")
     parser.add_argument("--voltages", type=float, nargs="+", default=None, help="Voltage scan list [V], e.g. --voltages -2 -3 -4 -5")
     parser.add_argument("--current-limit", type=float, default=None, help="Shared current compliance/current limit [A], e.g. 100e-6")
@@ -428,7 +469,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--continue-on-error", action="store_true", help="Continue scan even if calibration script fails")
     parser.add_argument("--leave-output-on", action="store_true", help="Do not turn SMU output off at the end. Not recommended.")
     parser.add_argument("--no-smu", action="store_true", help="Force no-SMU mode: run calibration without connecting to/applying Keithley bias")
-    parser.add_argument("--require-smu", action="store_true", help="Fail if the Keithley is not connected instead of falling back to no-SMU mode")
+    parser.add_argument("--require-smu", action="store_true", help="Fail if the selected SMU is not connected instead of falling back to no-SMU mode")
     parser.add_argument("--dry-config", action="store_true", help="Print resolved experiment steps and exit without touching the SMU")
     return parser
 
@@ -438,8 +479,13 @@ def main() -> int:
     args = parser.parse_args()
     config = load_json_config(args.config)
 
-    device = cfg_value(config, "device", args.device, DEFAULT_DEVICE)
     smu_driver = str(cfg_value(config, "smu_driver", args.smu_driver, "keithley")).lower()
+    device = cfg_value(config, "device", args.device, default_device_for_driver(smu_driver))
+    smu_channel_value = cfg_value(config, "smu_channel", args.channel, config.get("channel"))
+    smu_channel = None if smu_channel_value is None else int(smu_channel_value)
+    caen_board = int(cfg_value(config, "caen_board", args.caen_board, CAEN_DEFAULT_BOARD))
+    caen_baudrate = int(cfg_value(config, "caen_baudrate", args.caen_baudrate, CAEN_DEFAULT_BAUDRATE))
+    caen_voltage_magnitude = not bool(config.get("caen_signed_voltage", False) or args.caen_signed_voltage)
     settle = float(cfg_value(config, "settle", args.settle, DEFAULT_SETTLE))
     cycle_delay = float(cfg_value(config, "cycle_delay", args.cycle_delay, DEFAULT_CYCLE_DELAY))
     chip_name = str(cfg_value(config, "chip_name", args.chip_name, DEFAULT_CHIP_NAME))
@@ -471,6 +517,11 @@ def main() -> int:
     print(f"settle={settle:g} s, cycle_delay={cycle_delay:g} s")
     print(f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}")
     print(f"SMU driver={smu_driver}, device={device}")
+    if smu_driver == "caen":
+        print(
+            f"CAEN board={caen_board}, channel={CAEN_DEFAULT_CHANNEL if smu_channel is None else smu_channel}, "
+            f"baudrate={caen_baudrate}, voltage_mode={'magnitude' if caen_voltage_magnitude else 'signed'}"
+        )
 
     if args.dry_config:
         print("Dry config check only; SMU/calibration not started.")
@@ -498,7 +549,14 @@ def main() -> int:
     else:
         print(f"Checking {smu_driver} SMU connection at {device}")
         try:
-            smu = connect_smu_driver(smu_driver, device)
+            smu = connect_smu_driver(
+                smu_driver,
+                device,
+                channel=smu_channel,
+                board=caen_board,
+                baudrate=caen_baudrate,
+                voltage_magnitude=caen_voltage_magnitude,
+            )
             smu_idn = smu.idn
             print(f"SMU connected. IDN: {smu_idn}")
         except Exception as exc:  # noqa: BLE001
