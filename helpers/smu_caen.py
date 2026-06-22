@@ -9,6 +9,8 @@ as the Keithley driver:
     output_on()
     output_off()
     read_current()
+    read_voltage()
+    wait_until_voltage()
     drain_errors()
     close()
 
@@ -26,6 +28,7 @@ caller in logs/CSV as ``applied_voltage_V``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 
 DEFAULT_DEVICE = "/dev/serial/by-id/usb-CAEN_SPA_NIM_Desktop_HV_Power_Supply-if00"
@@ -213,6 +216,59 @@ class CAENBiasSupply:
     def read_current(self) -> tuple[float | None, str]:
         imon_uA, raw = self.caen.read_float_param(self.channel, "IMON")
         return imon_uA * 1e-6, raw
+
+    def read_voltage(self) -> tuple[float | None, str]:
+        vmon, raw = self.caen.read_float_param(self.channel, "VMON")
+        return vmon, raw
+
+    def read_status(self) -> tuple[str, str]:
+        response = self.caen.monitor_param(self.channel, "STAT")
+        return response.value or "", response.raw
+
+    def wait_until_voltage(
+        self,
+        voltage: float,
+        *,
+        tolerance: float = 1.0,
+        timeout_s: float | None = None,
+        poll_s: float = 0.5,
+    ) -> tuple[float | None, str]:
+        """Wait until CAEN VMON reaches the requested voltage magnitude.
+
+        CAEN ramp speed can be slow (for example 2 V/s).  Reading current after
+        a fixed 1 s settle can therefore record current at a much lower voltage
+        than the requested VSET.  This helper waits on VMON so IV rows match the
+        actual bias condition.
+        """
+        target = abs(float(voltage)) if self.voltage_magnitude else float(voltage)
+        tolerance = abs(float(tolerance))
+        poll_s = max(float(poll_s), 0.1)
+
+        if timeout_s is None:
+            try:
+                start_v, _ = self.read_voltage()
+                rup, _ = self.caen.read_float_param(self.channel, "RUP")
+                rdw, _ = self.caen.read_float_param(self.channel, "RDW")
+                start = float(start_v or 0.0)
+                rate = float(rup) if target >= start else float(rdw)
+                rate = max(rate, 1.0)
+                timeout_s = abs(target - start) / rate + 15.0
+            except Exception:
+                timeout_s = abs(target) / 1.0 + 30.0
+
+        deadline = time.monotonic() + max(float(timeout_s), poll_s)
+        last_v: float | None = None
+        last_raw = ""
+        while True:
+            last_v, last_raw = self.read_voltage()
+            if last_v is not None and abs(float(last_v) - target) <= tolerance:
+                return last_v, last_raw
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for CAEN CH{self.channel} VMON to reach "
+                    f"{target:g} V ± {tolerance:g} V; last VMON={last_v} raw={last_raw!r}"
+                )
+            time.sleep(poll_s)
 
     def drain_errors(self, max_reads: int = 10) -> list[str]:
         # The simple NDT1470 ASCII protocol used here reports command status in

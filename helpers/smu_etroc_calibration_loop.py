@@ -458,6 +458,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--current-limit", type=float, default=None, help="Shared current compliance/current limit [A], e.g. 100e-6")
     parser.add_argument("--cycle-delay", type=float, default=None, help="Seconds to wait between voltage steps")
     parser.add_argument("--settle", type=float, default=None, help="Seconds to wait after enabling/applying bias before reading current")
+    parser.add_argument("--skip-voltage-wait", action="store_true", help="Do not wait for drivers with VMON support to reach requested voltage before current read")
+    parser.add_argument("--voltage-tolerance", type=float, default=None, help="Voltage tolerance for VMON wait [V]. Default/config: 1.0")
     parser.add_argument("--chip-name", default=None, help="chip_name argument passed to i2c_test_with_rpi.py")
     parser.add_argument("--save-notes", default=None, help="Base save_notes string. Voltage/timestamp are appended automatically.")
     parser.add_argument("--i2c-script", type=Path, default=None, help="Path to i2c_test_with_rpi.py")
@@ -487,6 +489,8 @@ def main() -> int:
     caen_baudrate = int(cfg_value(config, "caen_baudrate", args.caen_baudrate, CAEN_DEFAULT_BAUDRATE))
     caen_voltage_magnitude = not bool(config.get("caen_signed_voltage", False) or args.caen_signed_voltage)
     settle = float(cfg_value(config, "settle", args.settle, DEFAULT_SETTLE))
+    voltage_wait = bool(config.get("voltage_wait", True)) and not args.skip_voltage_wait
+    voltage_tolerance = float(cfg_value(config, "voltage_tolerance", args.voltage_tolerance, 1.0))
     cycle_delay = float(cfg_value(config, "cycle_delay", args.cycle_delay, DEFAULT_CYCLE_DELAY))
     chip_name = str(cfg_value(config, "chip_name", args.chip_name, DEFAULT_CHIP_NAME))
     save_notes = str(cfg_value(config, "save_notes", args.save_notes, ""))
@@ -514,7 +518,7 @@ def main() -> int:
         print(f"  {idx}: voltage={step['voltage']:g} V, current_limit={step['current_limit']:g} A")
     print(f"chip_name={chip_name}")
     print(f"save_notes={save_notes}")
-    print(f"settle={settle:g} s, cycle_delay={cycle_delay:g} s")
+    print(f"settle={settle:g} s, voltage_wait={voltage_wait}, voltage_tolerance={voltage_tolerance:g} V, cycle_delay={cycle_delay:g} s")
     print(f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}")
     print(f"SMU driver={smu_driver}, device={device}")
     if smu_driver == "caen":
@@ -609,6 +613,13 @@ def main() -> int:
                 print("Enabling SMU output")
                 smu.output_on()
                 time.sleep(settle)
+                if voltage_wait and hasattr(smu, "wait_until_voltage"):
+                    print(f"Waiting for monitored voltage to reach {voltage:g} V")
+                    reached_v, reached_raw = smu.wait_until_voltage(
+                        voltage,
+                        tolerance=voltage_tolerance,
+                    )
+                    print(f"Voltage reached: VMON={reached_v} raw={reached_raw}")
             else:
                 print("No SMU connected: skipping voltage setup, output enable, and current readings")
                 setup_errors = []
@@ -619,7 +630,16 @@ def main() -> int:
             step_notes = "_".join(notes_parts)
             log_path = output_dir / f"calibration_V_{vtag}_{step_stamp}.log"
 
+            before_voltage = None
+            before_voltage_raw = ""
+            smu_status_raw = ""
             if smu is not None:
+                if hasattr(smu, "read_voltage"):
+                    before_voltage, before_voltage_raw = smu.read_voltage()
+                    print(f"Before voltage: VMON={before_voltage} raw={before_voltage_raw}")
+                if hasattr(smu, "read_status"):
+                    _status_value, smu_status_raw = smu.read_status()
+                    print(f"Before status: raw={smu_status_raw}")
                 print(f"Reading current before calibration at Vset={voltage:g} V")
                 before_current, before_raw = smu.read_current()
                 before_time = timestamp_iso()
@@ -678,6 +698,9 @@ def main() -> int:
                     "applied_voltage_V": voltage,
                     "current_limit_A": current_limit,
                     "smu_idn": smu_idn,
+                    "before_voltage_V": before_voltage,
+                    "before_voltage_raw": before_voltage_raw,
+                    "smu_status_raw": smu_status_raw,
                     "before_current_A": before_current,
                     "before_raw": before_raw,
                     "calibration_status": calibration_status,
