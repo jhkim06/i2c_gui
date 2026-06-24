@@ -530,6 +530,218 @@ class i2c_connection():
         print(f"Auto calibration finished for chip: {hex(chip_address)}")
 
     #--------------------------------------------------------------------------#
+    # ACC S-curve scan around the auto-calibrated BL.  This is useful as an
+    # empirical check of the chip-side THCal BL/NW values read from status registers.
+    def scan_acc_scurve_single_pixel(
+            self,
+            chip_address: int,
+            row: int,
+            col: int,
+            dac_values,
+            chip: i2c_gui2.ETROC2_Chip = None,
+            baseline: int = None,
+            noise_width: int = None,
+            verbose: bool = False,
+        ):
+
+        if chip is None:
+            chip = self.get_chip_i2c_connection(chip_address)
+
+        chip.row = row
+        chip.col = col
+        chip.read_all_block("ETROC2", "Pixel Config")
+
+        # Manual DAC threshold scan using the THCal accumulator.
+        chip.set_decoded_value("ETROC2", "Pixel Config", "enable_TDC", 0)
+        chip.set_decoded_value("ETROC2", "Pixel Config", "CLKEn_THCal", 1)
+        chip.set_decoded_value("ETROC2", "Pixel Config", "BufEn_THCal", 1)
+        chip.set_decoded_value("ETROC2", "Pixel Config", "Bypass_THCal", 1)
+        chip.write_all_block("ETROC2", "Pixel Config")
+
+        rows = []
+        for dac in dac_values:
+            dac = int(np.clip(dac, 0, 1023))
+
+            chip.set_decoded_value("ETROC2", "Pixel Config", "RSTn_THCal", 0)
+            chip.write_decoded_value("ETROC2", "Pixel Config", "RSTn_THCal")
+            chip.set_decoded_value("ETROC2", "Pixel Config", "RSTn_THCal", 1)
+            chip.write_decoded_value("ETROC2", "Pixel Config", "RSTn_THCal")
+
+            chip.set_decoded_value("ETROC2", "Pixel Config", "DAC", dac)
+            chip.write_decoded_value("ETROC2", "Pixel Config", "DAC")
+
+            chip.set_decoded_value("ETROC2", "Pixel Config", "ScanStart_THCal", 1)
+            chip.write_decoded_value("ETROC2", "Pixel Config", "ScanStart_THCal")
+            chip.set_decoded_value("ETROC2", "Pixel Config", "ScanStart_THCal", 0)
+            chip.write_decoded_value("ETROC2", "Pixel Config", "ScanStart_THCal")
+
+            retry_counter = 0
+            chip.read_decoded_value("ETROC2", "Pixel Status", "ScanDone")
+            while chip.get_decoded_value("ETROC2", "Pixel Status", "ScanDone") != 1:
+                time.sleep(0.01)
+                chip.read_decoded_value("ETROC2", "Pixel Status", "ScanDone")
+                retry_counter += 1
+                if retry_counter == 5:
+                    print(f"ACC S-curve scan did not finish for row {row}, col {col}, DAC {dac}")
+                    break
+
+            chip.read_decoded_value("ETROC2", "Pixel Status", "ACC")
+            rows.append({
+                "row": row,
+                "col": col,
+                "dac": dac,
+                "acc": chip.get_decoded_value("ETROC2", "Pixel Status", "ACC"),
+                "baseline": baseline,
+                "noise_width": noise_width,
+                "timestamp": datetime.datetime.now(),
+            })
+
+        # Leave pixel in a safe disabled/manual-threshold state.
+        chip.set_decoded_value("ETROC2", "Pixel Config", "CLKEn_THCal", 0)
+        chip.set_decoded_value("ETROC2", "Pixel Config", "BufEn_THCal", 0)
+        chip.set_decoded_value("ETROC2", "Pixel Config", "Bypass_THCal", 1)
+        chip.set_decoded_value("ETROC2", "Pixel Config", "DAC", 0x3ff)
+        chip.write_all_block("ETROC2", "Pixel Config")
+
+        if verbose:
+            print(f"ACC S-curve scan done for pixel ({row},{col}) on chip: {hex(chip_address)}")
+
+        return pd.DataFrame(rows)
+
+
+    def scan_acc_scurves(
+            self,
+            chip_address: int,
+            pixel_list: list[tuple],
+            half_range: int = 40,
+            step: int = 1,
+            chip: i2c_gui2.ETROC2_Chip = None,
+            verbose: bool = False,
+        ):
+
+        if chip is None:
+            chip = self.get_chip_i2c_connection(chip_address)
+
+        if not isinstance(self.BL_df.get(chip_address), pd.DataFrame) or self.BL_df[chip_address].empty:
+            raise RuntimeError("Run auto_calibration first so BL/NW are available for choosing the DAC range.")
+
+        bl_df = self.BL_df[chip_address]
+        out = []
+        for row, col in tqdm(pixel_list, desc="ACC S-curve pixels", position=0):
+            pixel_bl = bl_df.loc[(bl_df["row"] == row) & (bl_df["col"] == col)]
+            if pixel_bl.empty:
+                print(f"Skipping pixel ({row},{col}): no BL/NW entry found")
+                continue
+            baseline = int(pixel_bl["baseline"].iloc[0])
+            noise_width = int(pixel_bl["noise_width"].iloc[0])
+            dac_values = np.arange(baseline - half_range, baseline + half_range + 1, step)
+            dac_values = np.unique(np.clip(dac_values, 0, 1023).astype(int))
+            out.append(self.scan_acc_scurve_single_pixel(
+                chip_address=chip_address,
+                row=row,
+                col=col,
+                dac_values=dac_values,
+                chip=chip,
+                baseline=baseline,
+                noise_width=noise_width,
+                verbose=verbose,
+            ))
+
+        if not out:
+            return pd.DataFrame(columns=["row", "col", "dac", "acc", "baseline", "noise_width", "timestamp"])
+        return pd.concat(out, ignore_index=True)
+
+
+    def save_acc_scurves(self, acc_df: pd.DataFrame, hist_dir: str = "../ETROC-History", save_notes: str = ""):
+        import sqlite3
+
+        if acc_df.empty:
+            print("No ACC S-curve data to save")
+            return
+
+        save_mother_path = Path(hist_dir)
+        save_mother_path.mkdir(exist_ok=True, parents=True)
+        sqlite_outfile = save_mother_path / "ACCScurveHistory.sqlite"
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        acc_df = acc_df.copy()
+        acc_df["save_notes"] = save_notes
+
+        with sqlite3.connect(sqlite_outfile) as sqlconn:
+            acc_df.to_sql("acc_scurve", sqlconn, if_exists="append", index=False)
+
+        fig_outdir = Path("../ETROC-figures") / (datetime.date.today().isoformat() + "_Array_Test_Results") / "ACCScurve"
+        fig_outdir.mkdir(exist_ok=True, parents=True)
+        self.make_acc_scurve_plots(acc_df, fig_outdir, timestamp, save_notes)
+        print(f"Saved ACC S-curve data to {sqlite_outfile}")
+
+
+    def make_acc_scurve_plots(self, acc_df: pd.DataFrame, save_path, timestamp, note: str = ""):
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import ScalarFormatter
+
+        pixels = acc_df[["row", "col"]].drop_duplicates().to_records(index=False).tolist()
+        n_pix = len(pixels)
+        n_cols = min(3, n_pix)
+        n_rows = int(np.ceil(n_pix / n_cols))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(7.2 * n_cols, 5.0 * n_rows), squeeze=False, dpi=160)
+
+        for ax, (row, col) in zip(axes.flatten(), pixels):
+            one = acc_df[(acc_df["row"] == row) & (acc_df["col"] == col)].sort_values("dac")
+            x = one["dac"].to_numpy(dtype=float)
+            y = one["acc"].to_numpy(dtype=float)
+            bl = one["baseline"].iloc[0]
+            nw = one["noise_width"].iloc[0]
+
+            if pd.notna(bl) and pd.notna(nw):
+                ax.axvspan(bl - nw, bl + nw, color="0.78", alpha=0.35, zorder=0)
+                ax.axvline(bl - nw, color="0.35", lw=1.0, ls="--", zorder=1)
+                ax.axvline(bl + nw, color="0.35", lw=1.0, ls="--", zorder=1)
+            if pd.notna(bl):
+                ax.axvline(bl, color="0.20", lw=1.6, ls="--", zorder=1)
+
+            ax.plot(x, y, "o-", color="tab:red", lw=1.8, ms=4.5, label="ACC S-curve", zorder=2)
+
+            ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+            ax.ticklabel_format(axis="y", style="sci", scilimits=(4, 4))
+
+            ymax = float(np.nanmax(y)) if len(y) else 1.0
+            ymin = float(np.nanmin(y)) if len(y) else 0.0
+            yrange = max(ymax - ymin, 1.0)
+            ax.set_ylim(ymin - 0.06 * yrange, ymax + 0.12 * yrange)
+            if len(x):
+                xmin = float(np.nanmin(x))
+                xmax = float(np.nanmax(x))
+                xrange = max(xmax - xmin, 1.0)
+                ax.set_xlim(xmin - 0.03 * xrange, xmax + 0.03 * xrange)
+
+            if pd.notna(bl):
+                ax.annotate(f"BL={int(bl)}", xy=(bl, ymax - 0.08 * yrange), xytext=(8, 16),
+                            textcoords="offset points", fontsize=10, color="0.20",
+                            arrowprops=dict(arrowstyle="->", color="0.25", lw=1.0))
+            if pd.notna(bl) and pd.notna(nw):
+                bracket_y = ymin + 0.16 * yrange
+                ax.annotate("", xy=(bl - nw, bracket_y), xytext=(bl + nw, bracket_y),
+                            arrowprops=dict(arrowstyle="<->", color="0.25", lw=1.1))
+                ax.text(bl, bracket_y + 0.035 * yrange, f"NW={int(nw)}", ha="center", va="bottom",
+                        fontsize=10, color="0.20")
+
+            ax.set_title(f"Pixel ({row},{col})", fontsize=12)
+            ax.set_xlabel("VTH (DAC values)", fontsize=11)
+            ax.set_ylabel("Accumulator Number", fontsize=11)
+            ax.tick_params(axis="both", labelsize=10)
+            ax.grid(False)
+
+        for ax in axes.flatten()[n_pix:]:
+            ax.axis("off")
+
+        if note:
+            fig.suptitle(f"ACC S-curve scan {note}", fontsize=13, y=0.995)
+        fig.tight_layout(rect=[0, 0, 1, 0.97] if note else None)
+        fig.savefig(save_path / f"ACC_Scurve_{timestamp}.png", bbox_inches="tight")
+        plt.close(fig)
+
+    #--------------------------------------------------------------------------#
     # Function 7
     def prepare_ws_testing(self, chip_address, ws_address, chip: i2c_gui2.ETROC2_Chip=None, RFSel=0, QSel=30, QInjDelay=0x0a):
 

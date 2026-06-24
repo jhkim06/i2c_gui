@@ -4,7 +4,7 @@
 The script can run in two modes:
   - SMU mode: a supported SMU driver is loaded, so voltage is applied and current is recorded.
   - No-SMU mode: Keithley is missing/disabled, so ETROC calibration still runs,
-    but no IV/current CSV, SQLite, or plot is written.
+    but no IV/current SQLite or plot is written.
 
 For each experiment step:
   1. Set SMU bias voltage and current compliance.
@@ -13,7 +13,7 @@ For each experiment step:
   4. Run i2c_test_with_rpi.py and wait until it finishes.
      That script saves baseline/noise-width SQLite results and plots.
   5. Append pre-calibration IV measurements to cumulative IVHistory.sqlite,
-     save per-scan IV CSV, and save per-step calibration log.
+     and optionally save per-step calibration logs when requested.
   6. Draw an IV curve plot from the pre-calibration currents after the voltage scan is done.
 
 Recommended JSON config format:
@@ -68,7 +68,6 @@ Safety:
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime as dt
 import json
 import os
@@ -257,7 +256,7 @@ def run_calibration(
     i2c_script: Path,
     chip_name: str,
     save_notes: str,
-    log_path: Path,
+    log_path: Path | None,
     timeout_s: float | None,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [
@@ -270,62 +269,70 @@ def run_calibration(
     ]
 
     start_line = f"$ {' '.join(cmd)}\n\n"
-    log_path.write_text(start_line)
+    log_fh = None
+    if log_path is not None:
+        log_path.write_text(start_line)
+        log_fh = log_path.open("ab")
+        log_fh.write(b"--- OUTPUT ---\n")
+    else:
+        print(start_line, end="")
 
     sys.stdout.flush()
     sys.stderr.flush()
 
     output_chunks: list[bytes] = []
-    with log_path.open("ab") as f:
-        f.write(b"--- OUTPUT ---\n")
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(i2c_script.parent),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            bufsize=0,
-        )
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(i2c_script.parent),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
+    )
 
-        assert proc.stdout is not None
-        try:
-            import selectors
+    assert proc.stdout is not None
+    try:
+        import selectors
 
-            selector = selectors.DefaultSelector()
-            selector.register(proc.stdout, selectors.EVENT_READ)
-            start_time = time.monotonic()
-            while True:
-                if timeout_s is not None and (time.monotonic() - start_time) > timeout_s:
-                    proc.kill()
-                    proc.wait()
-                    output = b"".join(output_chunks).decode(errors="replace")
-                    f.write(f"\n--- TIMEOUT AFTER {timeout_s} s ---\n".encode())
-                    raise subprocess.TimeoutExpired(cmd, timeout_s, output=output)
+        selector = selectors.DefaultSelector()
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        start_time = time.monotonic()
+        while True:
+            if timeout_s is not None and (time.monotonic() - start_time) > timeout_s:
+                proc.kill()
+                proc.wait()
+                output = b"".join(output_chunks).decode(errors="replace")
+                if log_fh is not None:
+                    log_fh.write(f"\n--- TIMEOUT AFTER {timeout_s} s ---\n".encode())
+                raise subprocess.TimeoutExpired(cmd, timeout_s, output=output)
 
-                events = selector.select(timeout=0.1)
-                for key, _ in events:
-                    chunk = os.read(key.fileobj.fileno(), 4096)
-                    if chunk:
-                        sys.stdout.buffer.write(chunk)
-                        sys.stdout.buffer.flush()
-                        f.write(chunk)
-                        f.flush()
-                        output_chunks.append(chunk)
+            events = selector.select(timeout=0.1)
+            for key, _ in events:
+                chunk = os.read(key.fileobj.fileno(), 4096)
+                if chunk:
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
+                    if log_fh is not None:
+                        log_fh.write(chunk)
+                        log_fh.flush()
+                    output_chunks.append(chunk)
 
-                if proc.poll() is not None:
-                    # Drain any remaining buffered output after process exit.
-                    while True:
-                        chunk = proc.stdout.read(4096)
-                        if not chunk:
-                            break
-                        sys.stdout.buffer.write(chunk)
-                        sys.stdout.buffer.flush()
-                        f.write(chunk)
-                        output_chunks.append(chunk)
-                    break
-        finally:
-            proc.stdout.close()
-
-        f.write(f"\n--- RETURN CODE: {proc.returncode} ---\n".encode())
+            if proc.poll() is not None:
+                # Drain any remaining buffered output after process exit.
+                while True:
+                    chunk = proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
+                    if log_fh is not None:
+                        log_fh.write(chunk)
+                    output_chunks.append(chunk)
+                break
+    finally:
+        proc.stdout.close()
+        if log_fh is not None:
+            log_fh.write(f"\n--- RETURN CODE: {proc.returncode} ---\n".encode())
+            log_fh.close()
 
     output_text = b"".join(output_chunks).decode(errors="replace")
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout=output_text, stderr="")
@@ -396,6 +403,24 @@ def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> Non
         )
 
 
+def load_iv_rows_sqlite(sqlite_path: Path, run_timestamp: str) -> list[dict[str, object]]:
+    """Load IV rows for one voltage-scan run from the cumulative SQLite history."""
+    import sqlite3
+
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM iv_measurements
+            WHERE run_timestamp = ?
+            ORDER BY step
+            """,
+            (run_timestamp,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def plot_iv_curve(
     rows: list[dict[str, object]],
     plot_path: Path,
@@ -463,12 +488,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chip-name", default=None, help="chip_name argument passed to i2c_test_with_rpi.py")
     parser.add_argument("--save-notes", default=None, help="Base save_notes string. Voltage/timestamp are appended automatically.")
     parser.add_argument("--i2c-script", type=Path, default=None, help="Path to i2c_test_with_rpi.py")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Directory for CSV summary and per-step logs")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Directory for SQLite output and optional per-step logs")
     parser.add_argument("--calibration-timeout", type=float, default=None, help="Optional timeout for each calibration run [s]")
     parser.add_argument("--etroc-i2c-bus", type=int, default=None, help="Raspberry Pi I2C bus for ETROC2 connection check. Default/config: 1")
     parser.add_argument("--etroc-i2c-address", default=None, help="ETROC2 7-bit I2C address for connection check, e.g. 0x60")
     parser.add_argument("--skip-etroc-check", action="store_true", help="Disable ETROC2 I2C connection check before each voltage step")
     parser.add_argument("--continue-on-error", action="store_true", help="Continue scan even if calibration script fails")
+    parser.add_argument("--save-logs", action="store_true", help="Save per-step calibration stdout logs under output-dir. Default/config: false")
     parser.add_argument("--leave-output-on", action="store_true", help="Do not turn SMU output off at the end. Not recommended.")
     parser.add_argument("--no-smu", action="store_true", help="Force no-SMU mode: run calibration without connecting to/applying Keithley bias")
     parser.add_argument("--require-smu", action="store_true", help="Fail if the selected SMU is not connected instead of falling back to no-SMU mode")
@@ -503,6 +529,7 @@ def main() -> int:
     etroc_address_value = cfg_value(config, "etroc_i2c_address", args.etroc_i2c_address, DEFAULT_ETROC_I2C_ADDRESS)
     etroc_i2c_address = parse_i2c_address(etroc_address_value)
     check_etroc = bool(config.get("check_etroc", True)) and not args.skip_etroc_check
+    save_logs = bool(config.get("save_logs", False)) or args.save_logs
 
     steps = build_steps(config, args.voltage, args.voltages, args.current_limit)
 
@@ -519,7 +546,7 @@ def main() -> int:
     print(f"chip_name={chip_name}")
     print(f"save_notes={save_notes}")
     print(f"settle={settle:g} s, voltage_wait={voltage_wait}, voltage_tolerance={voltage_tolerance:g} V, cycle_delay={cycle_delay:g} s")
-    print(f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}")
+    print(f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}, save_logs={save_logs}")
     print(f"SMU driver={smu_driver}, device={device}")
     if smu_driver == "caen":
         print(
@@ -533,7 +560,6 @@ def main() -> int:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     iv_stamp = timestamp_for_file()
-    csv_path: Path | None = None
     iv_sqlite_path: Path | None = None
     iv_plot_path: Path | None = None
     rows: list[dict[str, object]] = []
@@ -628,7 +654,7 @@ def main() -> int:
             step_stamp = timestamp_for_file()
             notes_parts = [p for p in [save_notes, f"V_{vtag}", step_stamp] if p]
             step_notes = "_".join(notes_parts)
-            log_path = output_dir / f"calibration_V_{vtag}_{step_stamp}.log"
+            log_path = output_dir / f"calibration_V_{vtag}_{step_stamp}.log" if save_logs else None
 
             before_voltage = None
             before_voltage_raw = ""
@@ -664,14 +690,16 @@ def main() -> int:
             except subprocess.TimeoutExpired as exc:
                 calibration_returncode = "timeout"
                 calibration_status = "timeout"
-                log_path.write_text(
-                    f"Calibration timed out after {calibration_timeout} s\n"
-                    f"Command: {exc.cmd}\n"
-                    f"stdout:\n{exc.stdout or ''}\n"
-                    f"stderr:\n{exc.stderr or ''}\n"
-                )
+                if log_path is not None:
+                    log_path.write_text(
+                        f"Calibration timed out after {calibration_timeout} s\n"
+                        f"Command: {exc.cmd}\n"
+                        f"stdout:\n{exc.stdout or ''}\n"
+                        f"stderr:\n{exc.stderr or ''}\n"
+                    )
 
-            print(f"Calibration finished: {calibration_status}; log={log_path}")
+            log_msg = f"; log={log_path}" if log_path is not None else ""
+            print(f"Calibration finished: {calibration_status}{log_msg}")
 
             if smu is not None:
                 smu_errors = smu.drain_errors()
@@ -683,8 +711,7 @@ def main() -> int:
                 smu_errors = []
 
             if smu is not None:
-                if csv_path is None:
-                    csv_path = output_dir / f"smu_etroc_calibration_loop_{iv_stamp}.csv"
+                if iv_sqlite_path is None:
                     iv_sqlite_path = output_dir / "IVHistory.sqlite"
                     plot_label = safe_filename_part(f"{chip_name}_{save_notes}" if save_notes else chip_name)
                     iv_plot_path = etroc_figure_dir(chip_name) / f"{plot_label}_IV_curve_{iv_stamp}.png"
@@ -705,20 +732,14 @@ def main() -> int:
                     "before_raw": before_raw,
                     "calibration_status": calibration_status,
                     "calibration_returncode": calibration_returncode,
-                    "calibration_log": str(log_path),
+                    "calibration_log": str(log_path) if log_path is not None else "",
                     "save_notes": step_notes,
                     "smu_errors": " | ".join(smu_errors),
                 }
                 rows.append(row)
 
-                # Write CSV every step so partial IV results survive failures/Ctrl-C.
-                with csv_path.open("w", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-                    writer.writeheader()
-                    writer.writerows(rows)
-                print(f"Updated IV CSV: {csv_path}")
-
                 if iv_sqlite_path is not None:
+                    # Write SQLite every step so partial IV results survive failures/Ctrl-C.
                     save_iv_rows_sqlite(iv_sqlite_path, rows)
                     print(f"Updated IV SQLite: {iv_sqlite_path}")
 
@@ -751,15 +772,14 @@ def main() -> int:
                     print(f"Warning: failed to turn output off: {exc}", file=sys.stderr)
             smu.close()
 
-    if csv_path is not None:
+    if iv_sqlite_path is not None:
         if iv_plot_path is not None:
-            plot_iv_curve(rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes)
+            plot_rows = load_iv_rows_sqlite(iv_sqlite_path, iv_stamp)
+            plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes)
             print(f"Final IV plot: {iv_plot_path}")
-        print(f"Final IV CSV: {csv_path}")
-        if iv_sqlite_path is not None:
-            print(f"Final IV SQLite: {iv_sqlite_path}")
+        print(f"Final IV SQLite: {iv_sqlite_path}")
     else:
-        print("No SMU was used; no IV CSV, SQLite, or plot written.")
+        print("No SMU was used; no IV SQLite or plot written.")
     print("Done")
     return exit_code
 
