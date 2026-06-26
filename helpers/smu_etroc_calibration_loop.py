@@ -641,11 +641,17 @@ def main() -> int:
                 time.sleep(settle)
                 if voltage_wait and hasattr(smu, "wait_until_voltage"):
                     print(f"Waiting for monitored voltage to reach {voltage:g} V")
-                    reached_v, reached_raw = smu.wait_until_voltage(
-                        voltage,
-                        tolerance=voltage_tolerance,
-                    )
-                    print(f"Voltage reached: VMON={reached_v} raw={reached_raw}")
+                    try:
+                        reached_v, reached_raw = smu.wait_until_voltage(
+                            voltage,
+                            tolerance=voltage_tolerance,
+                        )
+                        print(f"Voltage reached: VMON={reached_v} raw={reached_raw}")
+                    except TimeoutError as exc:
+                        print(
+                            f"WARNING: {exc}; continuing with measured voltage/current before calibration.",
+                            file=sys.stderr,
+                        )
             else:
                 print("No SMU connected: skipping voltage setup, output enable, and current readings")
                 setup_errors = []
