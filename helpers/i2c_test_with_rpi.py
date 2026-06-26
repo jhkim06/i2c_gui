@@ -1,6 +1,7 @@
 import argparse
 import i2c_gui2_helpers as helpers
 import datetime
+from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
@@ -70,7 +71,8 @@ i2c_conn.config_chips(
 now = datetime.datetime.now().isoformat(sep=' ', timespec='seconds')
 full_notes = f"{args.save_notes}" if args.save_notes else now
 
-i2c_conn.save_baselines(hist_dir='/home/ellie/ETL/i2c_gui/helpers/output', save_notes=full_notes)
+output_dir = Path(__file__).resolve().parent / "output"
+i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes)
 
 acc_scurve_pixels = parse_pixel_list(args.acc_scurve_pixels)
 if acc_scurve_pixels:
@@ -83,6 +85,6 @@ if acc_scurve_pixels:
     )
     i2c_conn.save_acc_scurves(
         acc_df,
-        hist_dir='/home/ellie/ETL/i2c_gui/helpers/output',
+        hist_dir=output_dir,
         save_notes=full_notes,
     )
