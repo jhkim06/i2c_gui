@@ -96,6 +96,8 @@ DEFAULT_CYCLE_DELAY = 0.0
 DEFAULT_CHIP_NAME = "test"
 DEFAULT_ETROC_I2C_BUS = 1
 DEFAULT_ETROC_I2C_ADDRESS = 0x60
+DEFAULT_ETROC_RECHECK_ATTEMPTS = 3
+DEFAULT_ETROC_RECHECK_DELAY = 5.0
 
 
 def voltage_tag(voltage: float) -> str:
@@ -136,6 +138,28 @@ def check_etroc2_connected(i2c_bus: int, i2c_address: int) -> tuple[bool, str]:
         return True, f"ETROC2 ACK at bus={i2c_bus}, address=0x{i2c_address:02x}"
     except Exception as exc:  # noqa: BLE001
         return False, f"No ETROC2 ACK at bus={i2c_bus}, address=0x{i2c_address:02x}: {exc}"
+
+
+def wait_and_recheck_etroc2(
+    i2c_bus: int,
+    i2c_address: int,
+    *,
+    attempts: int = DEFAULT_ETROC_RECHECK_ATTEMPTS,
+    delay_s: float = DEFAULT_ETROC_RECHECK_DELAY,
+) -> tuple[bool, str]:
+    """Wait briefly and re-check ETROC2 before declaring the I2C link lost."""
+    attempts = max(int(attempts), 1)
+    delay_s = max(float(delay_s), 0.0)
+    last_message = ""
+    for attempt in range(1, attempts + 1):
+        if delay_s > 0:
+            print(f"Waiting {delay_s:g} s before ETROC2 I2C re-check {attempt}/{attempts}")
+            time.sleep(delay_s)
+        connected, last_message = check_etroc2_connected(i2c_bus, i2c_address)
+        print(last_message)
+        if connected:
+            return True, last_message
+    return False, last_message
 
 
 def load_json_config(path: Path | None) -> dict[str, Any]:
@@ -338,6 +362,35 @@ def run_calibration(
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout=output_text, stderr="")
 
 
+def safe_return_to_zero(
+    smu: Any,
+    current_limit: float,
+    *,
+    voltage_wait: bool,
+    voltage_tolerance: float,
+    settle: float,
+) -> None:
+    """Return the bias supply to 0 V without taking any extra measurements."""
+    print("Safely returning SMU bias to 0 V without measurement")
+    try:
+        smu.configure_voltage(0.0, current_limit)
+        smu.output_on()
+        if voltage_wait and hasattr(smu, "wait_until_voltage"):
+            try:
+                reached_v, reached_raw = smu.wait_until_voltage(
+                    0.0,
+                    tolerance=voltage_tolerance,
+                )
+                print(f"Zero-bias reached: VMON={reached_v} raw={reached_raw}")
+            except TimeoutError as exc:
+                print(f"WARNING: {exc}; turning output off anyway.", file=sys.stderr)
+        elif settle > 0:
+            time.sleep(settle)
+    finally:
+        print("Turning SMU output OFF after zero-bias return")
+        smu.output_off()
+
+
 def safe_filename_part(value: str) -> str:
     """Return a compact filesystem-safe label for filenames."""
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
@@ -492,6 +545,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calibration-timeout", type=float, default=None, help="Optional timeout for each calibration run [s]")
     parser.add_argument("--etroc-i2c-bus", type=int, default=None, help="Raspberry Pi I2C bus for ETROC2 connection check. Default/config: 1")
     parser.add_argument("--etroc-i2c-address", default=None, help="ETROC2 7-bit I2C address for connection check, e.g. 0x60")
+    parser.add_argument("--etroc-recheck-attempts", type=int, default=None, help="Number of delayed ETROC2 I2C re-checks before safely aborting after a lost connection. Default/config: 3")
+    parser.add_argument("--etroc-recheck-delay", type=float, default=None, help="Seconds to wait before each ETROC2 I2C re-check. Default/config: 5")
     parser.add_argument("--skip-etroc-check", action="store_true", help="Disable ETROC2 I2C connection check before each voltage step")
     parser.add_argument("--continue-on-error", action="store_true", help="Continue scan even if calibration script fails")
     parser.add_argument("--save-logs", action="store_true", help="Save per-step calibration stdout logs under output-dir. Default/config: false")
@@ -528,6 +583,8 @@ def main() -> int:
     etroc_i2c_bus = int(cfg_value(config, "etroc_i2c_bus", args.etroc_i2c_bus, DEFAULT_ETROC_I2C_BUS))
     etroc_address_value = cfg_value(config, "etroc_i2c_address", args.etroc_i2c_address, DEFAULT_ETROC_I2C_ADDRESS)
     etroc_i2c_address = parse_i2c_address(etroc_address_value)
+    etroc_recheck_attempts = int(cfg_value(config, "etroc_recheck_attempts", args.etroc_recheck_attempts, DEFAULT_ETROC_RECHECK_ATTEMPTS))
+    etroc_recheck_delay = float(cfg_value(config, "etroc_recheck_delay", args.etroc_recheck_delay, DEFAULT_ETROC_RECHECK_DELAY))
     check_etroc = bool(config.get("check_etroc", True)) and not args.skip_etroc_check
     save_logs = bool(config.get("save_logs", False)) or args.save_logs
 
@@ -537,6 +594,10 @@ def main() -> int:
         raise ValueError("settle must be >= 0")
     if cycle_delay < 0:
         raise ValueError("cycle_delay must be >= 0")
+    if etroc_recheck_attempts < 1:
+        raise ValueError("etroc_recheck_attempts must be >= 1")
+    if etroc_recheck_delay < 0:
+        raise ValueError("etroc_recheck_delay must be >= 0")
     if not i2c_script.exists():
         raise FileNotFoundError(f"I2C calibration script not found: {i2c_script}")
 
@@ -546,7 +607,10 @@ def main() -> int:
     print(f"chip_name={chip_name}")
     print(f"save_notes={save_notes}")
     print(f"settle={settle:g} s, voltage_wait={voltage_wait}, voltage_tolerance={voltage_tolerance:g} V, cycle_delay={cycle_delay:g} s")
-    print(f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}, save_logs={save_logs}")
+    print(
+        f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}, "
+        f"recheck_attempts={etroc_recheck_attempts}, recheck_delay={etroc_recheck_delay:g} s, save_logs={save_logs}"
+    )
     print(f"SMU driver={smu_driver}, device={device}")
     if smu_driver == "caen":
         print(
@@ -618,10 +682,18 @@ def main() -> int:
                 connected, message = check_etroc2_connected(etroc_i2c_bus, etroc_i2c_address)
                 print(message)
                 if not connected:
-                    print("ETROC2 is not connected/responding. Quitting.", file=sys.stderr)
-                    if smu is not None:
-                        smu.output_off()
-                    return 5
+                    print("ETROC2 is not connected/responding; waiting and re-checking before abort.", file=sys.stderr)
+                    connected, _message = wait_and_recheck_etroc2(
+                        etroc_i2c_bus,
+                        etroc_i2c_address,
+                        attempts=etroc_recheck_attempts,
+                        delay_s=etroc_recheck_delay,
+                    )
+                    if not connected:
+                        print("ETROC2 is still unavailable. Quitting scan safely.", file=sys.stderr)
+                        if smu is not None:
+                            smu.output_off()
+                        return 5
 
             if smu is not None:
                 print(
@@ -751,7 +823,36 @@ def main() -> int:
 
             if calibration_status != "ok":
                 exit_code = 4
-                if not args.continue_on_error:
+                etroc_still_connected = True
+                if check_etroc:
+                    print(
+                        "Calibration failed; checking whether ETROC2 I2C connection was lost "
+                        "before deciding how to stop."
+                    )
+                    etroc_still_connected, _message = wait_and_recheck_etroc2(
+                        etroc_i2c_bus,
+                        etroc_i2c_address,
+                        attempts=etroc_recheck_attempts,
+                        delay_s=etroc_recheck_delay,
+                    )
+
+                if not etroc_still_connected:
+                    print(
+                        "ETROC2 I2C connection is still unavailable. "
+                        "Safely returning bias to 0 V and quitting scan without further measurements.",
+                        file=sys.stderr,
+                    )
+                    exit_code = 5
+                    stop_scan = True
+                    if smu is not None:
+                        safe_return_to_zero(
+                            smu,
+                            current_limit,
+                            voltage_wait=voltage_wait,
+                            voltage_tolerance=voltage_tolerance,
+                            settle=settle,
+                        )
+                elif not args.continue_on_error:
                     print("Stopping because calibration failed. Use --continue-on-error to keep going.")
                     stop_scan = True
 
