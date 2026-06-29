@@ -71,6 +71,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import statistics
 import subprocess
 import sys
 import time
@@ -98,6 +99,9 @@ DEFAULT_ETROC_I2C_BUS = 1
 DEFAULT_ETROC_I2C_ADDRESS = 0x60
 DEFAULT_ETROC_RECHECK_ATTEMPTS = 3
 DEFAULT_ETROC_RECHECK_DELAY = 5.0
+DEFAULT_CURRENT_SAMPLES = 1
+DEFAULT_CURRENT_SAMPLE_DELAY = 0.1
+DEFAULT_CURRENT_STAT = "median"
 
 
 def voltage_tag(voltage: float) -> str:
@@ -391,6 +395,70 @@ def safe_return_to_zero(
         smu.output_off()
 
 
+def summarize_current_samples(samples: list[float], *, statistic: str) -> dict[str, float | int | None]:
+    """Summarize repeated current readings and choose one value for the IV curve."""
+    if not samples:
+        return {
+            "selected": None,
+            "mean": None,
+            "median": None,
+            "std": None,
+            "min": None,
+            "max": None,
+            "count": 0,
+        }
+
+    stat = statistic.lower()
+    mean_value = statistics.fmean(samples)
+    median_value = statistics.median(samples)
+    if stat == "mean":
+        selected = mean_value
+    elif stat == "first":
+        selected = samples[0]
+    elif stat == "last":
+        selected = samples[-1]
+    else:
+        selected = median_value
+
+    return {
+        "selected": selected,
+        "mean": mean_value,
+        "median": median_value,
+        "std": statistics.stdev(samples) if len(samples) > 1 else 0.0,
+        "min": min(samples),
+        "max": max(samples),
+        "count": len(samples),
+    }
+
+
+def read_current_summary(
+    smu: Any,
+    *,
+    samples: int,
+    sample_delay: float,
+    statistic: str,
+) -> tuple[dict[str, float | int | None], str]:
+    """Read current one or more times and return summary stats plus raw values."""
+    samples = max(int(samples), 1)
+    sample_delay = max(float(sample_delay), 0.0)
+    currents: list[float] = []
+    raw_values: list[str] = []
+
+    for sample_idx in range(samples):
+        current, raw = smu.read_current()
+        raw_values.append(raw)
+        if current is not None:
+            currents.append(float(current))
+        if sample_idx != samples - 1 and sample_delay > 0:
+            time.sleep(sample_delay)
+
+    summary = summarize_current_samples(currents, statistic=statistic)
+    raw_summary = " | ".join(
+        f"{idx}:{raw}" for idx, raw in enumerate(raw_values, start=1)
+    )
+    return summary, raw_summary
+
+
 def safe_filename_part(value: str) -> str:
     """Return a compact filesystem-safe label for filenames."""
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
@@ -425,6 +493,12 @@ def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> Non
                 current_limit_A REAL,
                 smu_idn TEXT,
                 before_current_A REAL,
+                before_current_mean_A REAL,
+                before_current_median_A REAL,
+                before_current_std_A REAL,
+                before_current_min_A REAL,
+                before_current_max_A REAL,
+                before_current_samples INTEGER,
                 before_raw TEXT,
                 calibration_status TEXT,
                 calibration_returncode TEXT,
@@ -434,20 +508,38 @@ def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> Non
             )
             """
         )
+        existing_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(iv_measurements)").fetchall()
+        }
+        for column_name, column_type in {
+            "before_current_mean_A": "REAL",
+            "before_current_median_A": "REAL",
+            "before_current_std_A": "REAL",
+            "before_current_min_A": "REAL",
+            "before_current_max_A": "REAL",
+            "before_current_samples": "INTEGER",
+        }.items():
+            if column_name not in existing_columns:
+                conn.execute(f"ALTER TABLE iv_measurements ADD COLUMN {column_name} {column_type}")
+
         conn.executemany(
             """
             INSERT OR REPLACE INTO iv_measurements (
                 run_timestamp, chip_name, save_notes, step,
                 step_start, before_time,
                 applied_voltage_V, current_limit_A, smu_idn,
-                before_current_A, before_raw,
+                before_current_A, before_current_mean_A, before_current_median_A,
+                before_current_std_A, before_current_min_A, before_current_max_A,
+                before_current_samples, before_raw,
                 calibration_status, calibration_returncode, calibration_log,
                 smu_errors
             ) VALUES (
                 :run_timestamp, :chip_name, :save_notes, :step,
                 :step_start, :before_time,
                 :applied_voltage_V, :current_limit_A, :smu_idn,
-                :before_current_A, :before_raw,
+                :before_current_A, :before_current_mean_A, :before_current_median_A,
+                :before_current_std_A, :before_current_min_A, :before_current_max_A,
+                :before_current_samples, :before_raw,
                 :calibration_status, :calibration_returncode, :calibration_log,
                 :smu_errors
             )
@@ -534,6 +626,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--voltage", type=float, default=None, help="Single bias voltage [V], e.g. -5")
     parser.add_argument("--voltages", type=float, nargs="+", default=None, help="Voltage scan list [V], e.g. --voltages -2 -3 -4 -5")
     parser.add_argument("--current-limit", type=float, default=None, help="Shared current compliance/current limit [A], e.g. 100e-6")
+    parser.add_argument("--current-samples", type=int, default=None, help="Number of current readings before calibration. Default/config: 1")
+    parser.add_argument("--current-sample-delay", type=float, default=None, help="Delay between repeated current readings [s]. Default/config: 0.1")
+    parser.add_argument("--current-stat", default=None, choices=["median", "mean", "first", "last"], help="Statistic used as before_current_A/IV point when multiple readings are taken. Default/config: median")
     parser.add_argument("--cycle-delay", type=float, default=None, help="Seconds to wait between voltage steps")
     parser.add_argument("--settle", type=float, default=None, help="Seconds to wait after enabling/applying bias before reading current")
     parser.add_argument("--skip-voltage-wait", action="store_true", help="Do not wait for drivers with VMON support to reach requested voltage before current read")
@@ -587,6 +682,9 @@ def main() -> int:
     etroc_recheck_delay = float(cfg_value(config, "etroc_recheck_delay", args.etroc_recheck_delay, DEFAULT_ETROC_RECHECK_DELAY))
     check_etroc = bool(config.get("check_etroc", True)) and not args.skip_etroc_check
     save_logs = bool(config.get("save_logs", False)) or args.save_logs
+    current_samples = int(cfg_value(config, "current_samples", args.current_samples, DEFAULT_CURRENT_SAMPLES))
+    current_sample_delay = float(cfg_value(config, "current_sample_delay", args.current_sample_delay, DEFAULT_CURRENT_SAMPLE_DELAY))
+    current_stat = str(cfg_value(config, "current_stat", args.current_stat, DEFAULT_CURRENT_STAT)).lower()
 
     steps = build_steps(config, args.voltage, args.voltages, args.current_limit)
 
@@ -598,6 +696,12 @@ def main() -> int:
         raise ValueError("etroc_recheck_attempts must be >= 1")
     if etroc_recheck_delay < 0:
         raise ValueError("etroc_recheck_delay must be >= 0")
+    if current_samples < 1:
+        raise ValueError("current_samples must be >= 1")
+    if current_sample_delay < 0:
+        raise ValueError("current_sample_delay must be >= 0")
+    if current_stat not in {"median", "mean", "first", "last"}:
+        raise ValueError("current_stat must be one of: median, mean, first, last")
     if not i2c_script.exists():
         raise FileNotFoundError(f"I2C calibration script not found: {i2c_script}")
 
@@ -607,6 +711,7 @@ def main() -> int:
     print(f"chip_name={chip_name}")
     print(f"save_notes={save_notes}")
     print(f"settle={settle:g} s, voltage_wait={voltage_wait}, voltage_tolerance={voltage_tolerance:g} V, cycle_delay={cycle_delay:g} s")
+    print(f"current_samples={current_samples}, current_sample_delay={current_sample_delay:g} s, current_stat={current_stat}")
     print(
         f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}, "
         f"recheck_attempts={etroc_recheck_attempts}, recheck_delay={etroc_recheck_delay:g} s, save_logs={save_logs}"
@@ -737,6 +842,15 @@ def main() -> int:
             before_voltage = None
             before_voltage_raw = ""
             smu_status_raw = ""
+            current_summary: dict[str, float | int | None] = {
+                "selected": None,
+                "mean": None,
+                "median": None,
+                "std": None,
+                "min": None,
+                "max": None,
+                "count": 0,
+            }
             if smu is not None:
                 if hasattr(smu, "read_voltage"):
                     before_voltage, before_voltage_raw = smu.read_voltage()
@@ -744,10 +858,23 @@ def main() -> int:
                 if hasattr(smu, "read_status"):
                     _status_value, smu_status_raw = smu.read_status()
                     print(f"Before status: raw={smu_status_raw}")
-                print(f"Reading current before calibration at Vset={voltage:g} V")
-                before_current, before_raw = smu.read_current()
+                print(
+                    f"Reading current before calibration at Vset={voltage:g} V "
+                    f"({current_samples} sample(s), stat={current_stat})"
+                )
+                current_summary, before_raw = read_current_summary(
+                    smu,
+                    samples=current_samples,
+                    sample_delay=current_sample_delay,
+                    statistic=current_stat,
+                )
+                before_current = current_summary["selected"]
                 before_time = timestamp_iso()
-                print(f"Before: I={before_current} A raw={before_raw}")
+                print(
+                    f"Before: I={before_current} A, "
+                    f"median={current_summary['median']} A, mean={current_summary['mean']} A, "
+                    f"std={current_summary['std']} A, n={current_summary['count']} raw={before_raw}"
+                )
             else:
                 before_current = None
                 before_raw = "NO_SMU"
@@ -807,6 +934,12 @@ def main() -> int:
                     "before_voltage_raw": before_voltage_raw,
                     "smu_status_raw": smu_status_raw,
                     "before_current_A": before_current,
+                    "before_current_mean_A": current_summary["mean"],
+                    "before_current_median_A": current_summary["median"],
+                    "before_current_std_A": current_summary["std"],
+                    "before_current_min_A": current_summary["min"],
+                    "before_current_max_A": current_summary["max"],
+                    "before_current_samples": current_summary["count"],
                     "before_raw": before_raw,
                     "calibration_status": calibration_status,
                     "calibration_returncode": calibration_returncode,
