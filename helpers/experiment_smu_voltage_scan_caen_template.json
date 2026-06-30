@@ -5,7 +5,7 @@
   "cycle_delay": 0.5,
   "check_etroc": true,
   "save_logs": false,
-  "smu_driver": "keithley",
+  "smu_driver": "caen",
   "require_smu": true,
   "etroc_i2c_bus": 1,
   "etroc_i2c_address": "0x60",
@@ -51,5 +51,10 @@
     -10,
     -5,
     0
-  ]
+  ],
+  "smu_channel": 3,
+  "caen_board": 0,
+  "caen_baudrate": 9600,
+  "caen_signed_voltage": false,
+  "save_notes": "CAEN"
 }
