@@ -153,11 +153,23 @@ def parse_response(raw: str) -> CAENResponse:
 
 
 def require_ok(response: CAENResponse, command: str) -> None:
-    if not response.ok:
+    if response.ok:
+        return
+
+    if response.fields.get("LOC", "").upper() == "ERR":
         raise CAENProtocolError(
-            f"CAEN command failed or returned unexpected response. "
+            "CAEN rejected the write command with LOC:ERR. The supply is likely "
+            "in LOCAL/front-panel control or otherwise locked against remote writes. "
+            "Switch the CAEN mainframe/channel to REMOTE/unlocked control, then rerun. "
+            "Read-only monitor commands can still work in this state, which is why the "
+            "initial SMU connection check may pass. "
             f"command={command.strip()!r}, response={response.raw!r}"
         )
+
+    raise CAENProtocolError(
+        f"CAEN command failed or returned unexpected response. "
+        f"command={command.strip()!r}, response={response.raw!r}"
+    )
 
 
 class CAENBiasSupply:
