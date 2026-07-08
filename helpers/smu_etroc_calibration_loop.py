@@ -28,8 +28,13 @@ Recommended JSON config format:
     "smu_channel": 3,
     "etroc_i2c_bus": 1,
     "etroc_i2c_address": "0x60",
-    "voltages": [-2, -3, -4, -5]
+    "voltages": [-2, -3, -4, -5],
+    "calibration_voltages": [-2, -5]
   }
+
+Use "calibration_voltages" or --calibration-voltages to measure current at every
+voltage while running ETROC auto-calibration only at selected voltage points.
+Omit it to keep the default behavior: calibrate every voltage.
 
 Use "smu_driver": "caen" and "smu_channel": 3 for CAEN NDT1470 CH3.
 
@@ -51,6 +56,10 @@ Run with config:
 
 Run without config:
   python smu_etroc_calibration_loop.py --voltages -2 -3 -4 -5 --current-limit 100e-6
+
+Run full voltage scan but calibrate only selected voltages:
+  python smu_etroc_calibration_loop.py --voltages -2 -3 -4 -5 --current-limit 100e-6 \
+    --calibration-voltages -2 -5
 
 Run with CAEN NDT1470 CH3:
   python smu_etroc_calibration_loop.py --smu-driver caen --channel 3 \
@@ -276,6 +285,29 @@ def build_steps(config: dict[str, Any], cli_voltage: float | None, cli_voltages:
         if step["current_limit"] <= 0:
             raise ValueError(f"step {idx} current_limit must be positive")
     return steps
+
+
+def selected_calibration_voltages(
+    config: dict[str, Any],
+    cli_calibration_voltages: list[float] | None,
+) -> set[float] | None:
+    """Return selected calibration voltages, or None to calibrate every step."""
+    raw_voltages = cli_calibration_voltages
+    if raw_voltages is None:
+        raw_voltages = config.get("calibration_voltages")
+
+    if raw_voltages is None:
+        return None
+    if not isinstance(raw_voltages, list) or not raw_voltages:
+        raise ValueError("calibration_voltages must be a non-empty list")
+    return {float(voltage) for voltage in raw_voltages}
+
+
+def should_run_calibration(voltage: float, calibration_voltages: set[float] | None) -> bool:
+    """Return whether to run ETROC auto-calibration at this voltage."""
+    if calibration_voltages is None:
+        return True
+    return float(voltage) in calibration_voltages
 
 
 def run_calibration(
@@ -625,6 +657,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--caen-signed-voltage", action="store_true", help="Send signed voltage to CAEN VSET instead of abs(voltage). Default sends magnitude.")
     parser.add_argument("--voltage", type=float, default=None, help="Single bias voltage [V], e.g. -5")
     parser.add_argument("--voltages", type=float, nargs="+", default=None, help="Voltage scan list [V], e.g. --voltages -2 -3 -4 -5")
+    parser.add_argument("--calibration-voltages", type=float, nargs="+", default=None, help="Voltage points where ETROC auto-calibration is run. Omit to calibrate every voltage.")
     parser.add_argument("--current-limit", type=float, default=None, help="Shared current compliance/current limit [A], e.g. 100e-6")
     parser.add_argument("--current-samples", type=int, default=None, help="Number of current readings before calibration. Default/config: 1")
     parser.add_argument("--current-sample-delay", type=float, default=None, help="Delay between repeated current readings [s]. Default/config: 0.1")
@@ -687,6 +720,13 @@ def main() -> int:
     current_stat = str(cfg_value(config, "current_stat", args.current_stat, DEFAULT_CURRENT_STAT)).lower()
 
     steps = build_steps(config, args.voltage, args.voltages, args.current_limit)
+    calibration_voltages = selected_calibration_voltages(config, args.calibration_voltages)
+    step_voltages = {float(step["voltage"]) for step in steps}
+    if calibration_voltages is not None:
+        missing_calibration_voltages = sorted(calibration_voltages - step_voltages)
+        if missing_calibration_voltages:
+            missing = ", ".join(f"{voltage:g}" for voltage in missing_calibration_voltages)
+            raise ValueError(f"calibration_voltages contains voltage(s) not in scan steps: {missing}")
 
     if settle < 0:
         raise ValueError("settle must be >= 0")
@@ -707,7 +747,8 @@ def main() -> int:
 
     print("Resolved experiment steps:")
     for idx, step in enumerate(steps, start=1):
-        print(f"  {idx}: voltage={step['voltage']:g} V, current_limit={step['current_limit']:g} A")
+        calibration_label = "calibration=yes" if should_run_calibration(step["voltage"], calibration_voltages) else "calibration=no"
+        print(f"  {idx}: voltage={step['voltage']:g} V, current_limit={step['current_limit']:g} A, {calibration_label}")
     print(f"chip_name={chip_name}")
     print(f"save_notes={save_notes}")
     print(f"settle={settle:g} s, voltage_wait={voltage_wait}, voltage_tolerance={voltage_tolerance:g} V, cycle_delay={cycle_delay:g} s")
@@ -880,31 +921,38 @@ def main() -> int:
                 before_raw = "NO_SMU"
                 before_time = timestamp_iso()
 
-            print("Starting ETROC auto-calibration")
-            try:
-                proc = run_calibration(
-                    python_exe=sys.executable,
-                    i2c_script=i2c_script,
-                    chip_name=chip_name,
-                    save_notes=step_notes,
-                    log_path=log_path,
-                    timeout_s=calibration_timeout,
-                )
-                calibration_returncode: int | str = proc.returncode
-                calibration_status = "ok" if proc.returncode == 0 else "failed"
-            except subprocess.TimeoutExpired as exc:
-                calibration_returncode = "timeout"
-                calibration_status = "timeout"
-                if log_path is not None:
-                    log_path.write_text(
-                        f"Calibration timed out after {calibration_timeout} s\n"
-                        f"Command: {exc.cmd}\n"
-                        f"stdout:\n{exc.stdout or ''}\n"
-                        f"stderr:\n{exc.stderr or ''}\n"
+            run_step_calibration = should_run_calibration(voltage, calibration_voltages)
+            if run_step_calibration:
+                print("Starting ETROC auto-calibration")
+                try:
+                    proc = run_calibration(
+                        python_exe=sys.executable,
+                        i2c_script=i2c_script,
+                        chip_name=chip_name,
+                        save_notes=step_notes,
+                        log_path=log_path,
+                        timeout_s=calibration_timeout,
                     )
+                    calibration_returncode: int | str = proc.returncode
+                    calibration_status = "ok" if proc.returncode == 0 else "failed"
+                except subprocess.TimeoutExpired as exc:
+                    calibration_returncode = "timeout"
+                    calibration_status = "timeout"
+                    if log_path is not None:
+                        log_path.write_text(
+                            f"Calibration timed out after {calibration_timeout} s\n"
+                            f"Command: {exc.cmd}\n"
+                            f"stdout:\n{exc.stdout or ''}\n"
+                            f"stderr:\n{exc.stderr or ''}\n"
+                        )
 
-            log_msg = f"; log={log_path}" if log_path is not None else ""
-            print(f"Calibration finished: {calibration_status}{log_msg}")
+                log_msg = f"; log={log_path}" if log_path is not None else ""
+                print(f"Calibration finished: {calibration_status}{log_msg}")
+            else:
+                log_path = None
+                calibration_returncode = "skipped"
+                calibration_status = "skipped"
+                print(f"Skipping ETROC auto-calibration at {voltage:g} V")
 
             if smu is not None:
                 smu_errors = smu.drain_errors()
@@ -954,7 +1002,7 @@ def main() -> int:
                     save_iv_rows_sqlite(iv_sqlite_path, rows)
                     print(f"Updated IV SQLite: {iv_sqlite_path}")
 
-            if calibration_status != "ok":
+            if calibration_status not in {"ok", "skipped"}:
                 exit_code = 4
                 etroc_still_connected = True
                 if check_etroc:
