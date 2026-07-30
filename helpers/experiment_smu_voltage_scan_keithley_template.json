@@ -46,5 +46,6 @@
     -10,
     0
   ],
+  "calibration_voltages": [0, -100, -200],
   "save_notes": "Keithley"
 }
