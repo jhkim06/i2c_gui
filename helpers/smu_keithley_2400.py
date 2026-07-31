@@ -18,7 +18,7 @@ import time
 
 DEFAULT_DEVICE = "/dev/ttyUSB0"
 DEFAULT_BAUDRATE = 9600
-DEFAULT_TIMEOUT = 2.0
+DEFAULT_TIMEOUT = 1.0
 
 
 class Keithley2400IO:
@@ -100,22 +100,27 @@ class Keithley2400IO:
 
     def read(self, max_bytes: int = 4096) -> str:
         if self._serial is not None:
-            chunks: list[bytes] = []
+            # Keithley 2400 RS-232 commonly terminates replies with CR rather
+            # than LF.  Read byte-by-byte so we stop promptly on either one;
+            # using read_until(b"\n") can wait for the full timeout on CR-only
+            # replies and make every current sample look ~1-2 s slower.
+            data = bytearray()
             deadline = time.monotonic() + self.timeout
-            while time.monotonic() < deadline:
-                chunk = self._serial.read_until(b"\n", max_bytes)
-                if chunk:
-                    chunks.append(chunk)
-                    if chunk.endswith((b"\n", b"\r")):
+            while len(data) < max_bytes and time.monotonic() < deadline:
+                byte = self._serial.read(1)
+                if not byte:
+                    if data:
                         break
-                else:
+                    continue
+                data.extend(byte)
+                if byte in {b"\r", b"\n"}:
                     break
-            return b"".join(chunks).decode(errors="replace").strip()
+            return bytes(data).decode(errors="replace").strip()
         if self._fh is not None:
             return self._fh.read(max_bytes).decode(errors="replace").strip()
         raise RuntimeError("Keithley 2400 device is not open")
 
-    def query(self, cmd: str, delay_s: float = 0.1) -> str:
+    def query(self, cmd: str, delay_s: float = 0.05) -> str:
         self.write(cmd)
         time.sleep(delay_s)
         return self.read()
@@ -182,11 +187,15 @@ def configure_voltage_source(smu: Keithley2400IO, voltage: float, current_limit:
     smu.write(":SENS:FUNC \"CURR\"")
     smu.write(":SENS:CURR:RANG:AUTO ON")
     smu.write(f":SENS:CURR:PROT {current_limit}")
-    smu.write(":FORM:ELEM VOLT,CURR,RES,TIME,STAT")
+    # Keep integration time short for scan speed.  Increase NPLC if you need
+    # lower-noise current samples more than speed.
+    smu.write(":SENS:CURR:NPLC 0.1")
+    # Return only current to reduce serial payload and simplify parsing.
+    smu.write(":FORM:ELEM CURR")
 
 
 def read_current(smu: Keithley2400IO) -> tuple[float | None, str]:
-    raw = smu.query(":READ?", delay_s=0.2)
+    raw = smu.query(":READ?", delay_s=0.05)
     return parse_current_from_2400_read(raw), raw
 
 
