@@ -1,6 +1,6 @@
 {
   "chip_name": "ETROC2_TEST",
-  "current_limit": 0.0003,
+  "current_limit": 0.00003,
   "settle": 1.0,
   "cycle_delay": 0.5,
   "check_etroc": true,

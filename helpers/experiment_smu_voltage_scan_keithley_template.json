@@ -1,6 +1,6 @@
 {
   "chip_name": "ETROC2_TEST",
-  "current_limit": 0.0003,
+  "current_limit": 0.00003,
   "settle": 1.0,
   "cycle_delay": 0.5,
   "check_etroc": true,
@@ -33,6 +33,9 @@
     -180,
     -200,
     -220,
+    -240,
+    -220,
+    -200,
     -180,
     -160,
     -140,
@@ -46,6 +49,6 @@
     -10,
     0
   ],
-  "calibration_voltages": [0, -100, -200],
-  "save_notes": "Keithley"
+  "calibration_voltages": [-200],
+  "save_notes": "keithley"
 }
