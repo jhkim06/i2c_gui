@@ -347,6 +347,27 @@ def should_run_calibration(voltage: float, calibration_voltages: set[float] | No
     return float(voltage) in calibration_voltages
 
 
+def current_sampling_mask(steps: list[dict[str, float]], sweep: str) -> list[bool]:
+    """Return whether to sample current at each step for the requested sweep.
+
+    "up" means the initial increasing-HV-magnitude part of the scan, including
+    the highest-voltage turning point. "both" samples every step.
+    """
+    if sweep == "both":
+        return [True] * len(steps)
+    if sweep != "up":
+        raise ValueError(f"Unsupported current sampling sweep: {sweep!r}")
+
+    hv = [abs(float(step["voltage"])) for step in steps]
+    mask = [True] * len(steps)
+    for idx in range(1, len(hv)):
+        if hv[idx] < hv[idx - 1]:
+            for later_idx in range(idx, len(mask)):
+                mask[later_idx] = False
+            break
+    return mask
+
+
 def run_calibration(
     *,
     python_exe: str,
@@ -730,6 +751,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--current-samples", type=int, default=None, help="Number of current readings before calibration. Default/config: 1")
     parser.add_argument("--current-sample-delay", type=float, default=None, help="Delay between repeated current readings [s]. Default/config: 0.1")
     parser.add_argument("--current-stat", default=None, choices=["median", "mean", "first", "last"], help="Statistic used as before_current_A/IV point when multiple readings are taken. Default/config: median")
+    parser.add_argument("--current-sampling-sweep", default=None, choices=["up", "both"], help="Which sweep(s) to sample current for IV data. Default/config: up")
     parser.add_argument("--iv-sweep", default=None, choices=["up", "down", "both"], help="Which sweep to draw in the final IV plot. Default/config: up")
     parser.add_argument("--cycle-delay", type=float, default=None, help="Seconds to wait between voltage steps")
     parser.add_argument("--settle", type=float, default=None, help="Seconds to wait after enabling/applying bias before reading current")
@@ -788,9 +810,11 @@ def main() -> int:
     current_samples = int(cfg_value(config, "current_samples", args.current_samples, DEFAULT_CURRENT_SAMPLES))
     current_sample_delay = float(cfg_value(config, "current_sample_delay", args.current_sample_delay, DEFAULT_CURRENT_SAMPLE_DELAY))
     current_stat = str(cfg_value(config, "current_stat", args.current_stat, DEFAULT_CURRENT_STAT)).lower()
+    current_sampling_sweep = str(cfg_value(config, "current_sampling_sweep", args.current_sampling_sweep, "up")).lower()
     iv_sweep = str(cfg_value(config, "iv_sweep", args.iv_sweep, "up")).lower()
 
     steps = build_steps(config, args.voltage, args.voltages, args.current_limit)
+    sample_current_at_step = current_sampling_mask(steps, current_sampling_sweep)
     calibration_voltages = selected_calibration_voltages(config, args.calibration_voltages)
     step_voltages = {float(step["voltage"]) for step in steps}
     if calibration_voltages is not None:
@@ -813,6 +837,8 @@ def main() -> int:
         raise ValueError("current_sample_delay must be >= 0")
     if current_stat not in {"median", "mean", "first", "last"}:
         raise ValueError("current_stat must be one of: median, mean, first, last")
+    if current_sampling_sweep not in {"up", "both"}:
+        raise ValueError("current_sampling_sweep must be one of: up, both")
     if iv_sweep not in {"up", "down", "both"}:
         raise ValueError("iv_sweep must be one of: up, down, both")
     if not i2c_script.exists():
@@ -821,12 +847,13 @@ def main() -> int:
     print("Resolved experiment steps:")
     for idx, step in enumerate(steps, start=1):
         calibration_label = "calibration=yes" if should_run_calibration(step["voltage"], calibration_voltages) else "calibration=no"
-        print(f"  {idx}: voltage={step['voltage']:g} V, current_limit={step['current_limit']:g} A, {calibration_label}")
+        current_label = "current=yes" if sample_current_at_step[idx - 1] else "current=no"
+        print(f"  {idx}: voltage={step['voltage']:g} V, current_limit={step['current_limit']:g} A, {calibration_label}, {current_label}")
     print(f"chip_name={chip_name}")
     print(f"save_notes={save_notes}")
     print(f"settle={settle:g} s, voltage_wait={voltage_wait}, voltage_tolerance={voltage_tolerance:g} V, cycle_delay={cycle_delay:g} s")
     print(f"current_samples={current_samples}, current_sample_delay={current_sample_delay:g} s, current_stat={current_stat}")
-    print(f"IV plot sweep={iv_sweep}")
+    print(f"current_sampling_sweep={current_sampling_sweep}, IV plot sweep={iv_sweep}")
     print(
         f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}, "
         f"recheck_attempts={etroc_recheck_attempts}, recheck_delay={etroc_recheck_delay:g} s, save_logs={save_logs}"
@@ -966,6 +993,7 @@ def main() -> int:
                 "max": None,
                 "count": 0,
             }
+            should_sample_current = sample_current_at_step[step_index - 1]
             if smu is not None:
                 if hasattr(smu, "read_voltage"):
                     before_voltage, before_voltage_raw = smu.read_voltage()
@@ -973,23 +1001,31 @@ def main() -> int:
                 if hasattr(smu, "read_status"):
                     _status_value, smu_status_raw = smu.read_status()
                     print(f"Before status: raw={smu_status_raw}")
-                print(
-                    f"Reading current before calibration at Vset={voltage:g} V "
-                    f"({current_samples} sample(s), stat={current_stat})"
-                )
-                current_summary, before_raw = read_current_summary(
-                    smu,
-                    samples=current_samples,
-                    sample_delay=current_sample_delay,
-                    statistic=current_stat,
-                )
-                before_current = current_summary["selected"]
+                if should_sample_current:
+                    print(
+                        f"Reading current before calibration at Vset={voltage:g} V "
+                        f"({current_samples} sample(s), stat={current_stat})"
+                    )
+                    current_summary, before_raw = read_current_summary(
+                        smu,
+                        samples=current_samples,
+                        sample_delay=current_sample_delay,
+                        statistic=current_stat,
+                    )
+                    before_current = current_summary["selected"]
+                    print(
+                        f"Before: I={before_current} A, "
+                        f"median={current_summary['median']} A, mean={current_summary['mean']} A, "
+                        f"std={current_summary['std']} A, n={current_summary['count']} raw={before_raw}"
+                    )
+                else:
+                    before_current = None
+                    before_raw = f"SKIPPED_CURRENT_SAMPLING sweep={current_sampling_sweep}"
+                    print(
+                        f"Skipping current sampling at Vset={voltage:g} V "
+                        f"because current_sampling_sweep={current_sampling_sweep}"
+                    )
                 before_time = timestamp_iso()
-                print(
-                    f"Before: I={before_current} A, "
-                    f"median={current_summary['median']} A, mean={current_summary['mean']} A, "
-                    f"std={current_summary['std']} A, n={current_summary['count']} raw={before_raw}"
-                )
             else:
                 before_current = None
                 before_raw = "NO_SMU"
