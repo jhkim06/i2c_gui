@@ -521,6 +521,21 @@ def summarize_current_samples(samples: list[float], *, statistic: str) -> dict[s
     }
 
 
+def read_smu_voltage(smu: Any) -> tuple[float | None, str]:
+    """Read SMU voltage/voltage monitor when supported.
+
+    Keithley 2470 adapter originally only exposed current reads, but querying
+    voltage during skipped-current return-sweep points keeps the front-panel
+    readback/display refreshed without taking a current sample.
+    """
+    if hasattr(smu, "read_voltage"):
+        return smu.read_voltage()
+    if getattr(smu, "name", "") == "keithley" and hasattr(smu, "smu"):
+        raw = smu.smu.query(":MEAS:VOLT?", delay_s=0.15)
+        return parse_first_float(raw), raw
+    return None, ""
+
+
 def read_current_summary(
     smu: Any,
     *,
@@ -752,7 +767,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--current-sample-delay", type=float, default=None, help="Delay between repeated current readings [s]. Default/config: 0.1")
     parser.add_argument("--current-stat", default=None, choices=["median", "mean", "first", "last"], help="Statistic used as before_current_A/IV point when multiple readings are taken. Default/config: median")
     parser.add_argument("--current-sampling-sweep", default=None, choices=["up", "both"], help="Which sweep(s) to sample current for IV data. Default/config: up")
-    parser.add_argument("--iv-sweep", default=None, choices=["up", "down", "both"], help="Which sweep to draw in the final IV plot. Default/config: up")
+    parser.add_argument("--iv-plot-sweep", "--iv-sweep", dest="iv_plot_sweep", default=None, choices=["up", "down", "both"], help="Which sweep to draw in the final IV plot. Default/config: up. --iv-sweep is kept as a deprecated alias.")
     parser.add_argument("--cycle-delay", type=float, default=None, help="Seconds to wait between voltage steps")
     parser.add_argument("--settle", type=float, default=None, help="Seconds to wait after enabling/applying bias before reading current")
     parser.add_argument("--skip-voltage-wait", action="store_true", help="Do not wait for drivers with VMON support to reach requested voltage before current read")
@@ -811,7 +826,10 @@ def main() -> int:
     current_sample_delay = float(cfg_value(config, "current_sample_delay", args.current_sample_delay, DEFAULT_CURRENT_SAMPLE_DELAY))
     current_stat = str(cfg_value(config, "current_stat", args.current_stat, DEFAULT_CURRENT_STAT)).lower()
     current_sampling_sweep = str(cfg_value(config, "current_sampling_sweep", args.current_sampling_sweep, "up")).lower()
-    iv_sweep = str(cfg_value(config, "iv_sweep", args.iv_sweep, "up")).lower()
+    iv_plot_sweep_value = args.iv_plot_sweep
+    if iv_plot_sweep_value is None:
+        iv_plot_sweep_value = config.get("iv_plot_sweep", config.get("iv_sweep", "up"))
+    iv_plot_sweep = str(iv_plot_sweep_value).lower()
 
     steps = build_steps(config, args.voltage, args.voltages, args.current_limit)
     sample_current_at_step = current_sampling_mask(steps, current_sampling_sweep)
@@ -839,8 +857,8 @@ def main() -> int:
         raise ValueError("current_stat must be one of: median, mean, first, last")
     if current_sampling_sweep not in {"up", "both"}:
         raise ValueError("current_sampling_sweep must be one of: up, both")
-    if iv_sweep not in {"up", "down", "both"}:
-        raise ValueError("iv_sweep must be one of: up, down, both")
+    if iv_plot_sweep not in {"up", "down", "both"}:
+        raise ValueError("iv_plot_sweep must be one of: up, down, both")
     if not i2c_script.exists():
         raise FileNotFoundError(f"I2C calibration script not found: {i2c_script}")
 
@@ -853,7 +871,7 @@ def main() -> int:
     print(f"save_notes={save_notes}")
     print(f"settle={settle:g} s, voltage_wait={voltage_wait}, voltage_tolerance={voltage_tolerance:g} V, cycle_delay={cycle_delay:g} s")
     print(f"current_samples={current_samples}, current_sample_delay={current_sample_delay:g} s, current_stat={current_stat}")
-    print(f"current_sampling_sweep={current_sampling_sweep}, IV plot sweep={iv_sweep}")
+    print(f"current_sampling_sweep={current_sampling_sweep}, iv_plot_sweep={iv_plot_sweep}")
     print(
         f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}, "
         f"recheck_attempts={etroc_recheck_attempts}, recheck_delay={etroc_recheck_delay:g} s, save_logs={save_logs}"
@@ -995,8 +1013,8 @@ def main() -> int:
             }
             should_sample_current = sample_current_at_step[step_index - 1]
             if smu is not None:
-                if hasattr(smu, "read_voltage"):
-                    before_voltage, before_voltage_raw = smu.read_voltage()
+                before_voltage, before_voltage_raw = read_smu_voltage(smu)
+                if before_voltage_raw:
                     print(f"Before voltage: VMON={before_voltage} raw={before_voltage_raw}")
                 if hasattr(smu, "read_status"):
                     _status_value, smu_status_raw = smu.read_status()
@@ -1019,12 +1037,20 @@ def main() -> int:
                         f"std={current_summary['std']} A, n={current_summary['count']} raw={before_raw}"
                     )
                 else:
-                    before_current = None
-                    before_raw = f"SKIPPED_CURRENT_SAMPLING sweep={current_sampling_sweep}"
                     print(
-                        f"Skipping current sampling at Vset={voltage:g} V "
-                        f"because current_sampling_sweep={current_sampling_sweep}"
+                        f"Skipping multi-sample current sampling at Vset={voltage:g} V "
+                        f"because current_sampling_sweep={current_sampling_sweep}; "
+                        "taking one quick current read for SQLite record"
                     )
+                    current_summary, before_raw = read_current_summary(
+                        smu,
+                        samples=1,
+                        sample_delay=0.0,
+                        statistic="first",
+                    )
+                    before_current = current_summary["selected"]
+                    before_raw = f"QUICK_CURRENT_READ_AFTER_SKIPPED_SAMPLING sweep={current_sampling_sweep} | {before_raw}"
+                    print(f"Before quick current: I={before_current} A, raw={before_raw}")
                 before_time = timestamp_iso()
             else:
                 before_current = None
@@ -1173,8 +1199,8 @@ def main() -> int:
     if iv_sqlite_path is not None:
         if iv_plot_path is not None:
             plot_rows = load_iv_rows_sqlite(iv_sqlite_path, iv_stamp)
-            plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes, sweep=iv_sweep)
-            print(f"Final IV plot: {iv_plot_path} (sweep={iv_sweep})")
+            plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes, sweep=iv_plot_sweep)
+            print(f"Final IV plot: {iv_plot_path} (iv_plot_sweep={iv_plot_sweep})")
         print(f"Final IV SQLite: {iv_sqlite_path}")
     else:
         print("No SMU was used; no IV SQLite or plot written.")

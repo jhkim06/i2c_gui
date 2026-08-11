@@ -171,7 +171,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--datetime", required=True, help="Run datetime/prefix, e.g. 20260625_212514 or '2026-06-25 21:25'")
     parser.add_argument("--hybrid", "--chip", dest="hybrid", required=True, help="Hybrid/chip name stored in chip_name")
     parser.add_argument("--current-column", default="before_current_A", choices=["before_current_A", "after_current_A"], help="Current column to plot")
-    parser.add_argument("--iv-sweep", default="up", choices=["up", "down", "both"], help="Which sweep to draw: up, down, or both. Default: up")
+    parser.add_argument("--iv-plot-sweep", "--iv-sweep", dest="iv_plot_sweep", default="up", choices=["up", "down", "both"], help="Which sweep to draw in the IV plot: up, down, or both. Default: up. --iv-sweep is kept as a deprecated alias.")
     parser.add_argument("--output", type=Path, default=None, help="Output PNG path. Default: helpers/output/IVcurve_<datetime>_<hybrid>.png")
     parser.add_argument("--case-sensitive", action="store_true", help="Require exact case match for hybrid/chip name")
 
@@ -208,12 +208,12 @@ def main() -> int:
         prefix = normalize_datetime_prefix(args.datetime).rstrip("_")
         args.output = args.db.parent / f"IVcurve_{safe_name(prefix)}_{safe_name(args.hybrid)}.png"
 
-    selected = select_iv_sweep_rows(kept, args.current_column, args.iv_sweep)
+    selected = select_iv_sweep_rows(kept, args.current_column, args.iv_plot_sweep)
     note = f"{len(kept)}/{len(rows)} points kept before sweep selection"
-    make_plot(rows, kept, args.output, args.current_column, title_note=note, sweep=args.iv_sweep)
+    make_plot(rows, kept, args.output, args.current_column, title_note=note, sweep=args.iv_plot_sweep)
 
     print(f"Wrote {args.output}")
-    print(f"Matched rows: {len(rows)}, kept: {len(kept)}, selected for {args.iv_sweep} sweep: {len(selected)}, dropped: {len(dropped)}")
+    print(f"Matched rows: {len(rows)}, kept: {len(kept)}, selected for {args.iv_plot_sweep} plot sweep: {len(selected)}, dropped: {len(dropped)}")
     if dropped:
         reasons: dict[str, int] = {}
         for _, reason in dropped:
