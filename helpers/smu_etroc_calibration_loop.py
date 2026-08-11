@@ -635,12 +635,45 @@ def load_iv_rows_sqlite(sqlite_path: Path, run_timestamp: str) -> list[dict[str,
     return [dict(row) for row in rows]
 
 
+def select_iv_sweep_rows(rows: list[dict[str, object]], sweep: str) -> list[dict[str, object]]:
+    """Return rows for the requested IV sweep direction.
+
+    "up" is the initial increasing-HV-magnitude part of the scan. "down" starts
+    at the high-voltage turning point and follows the decreasing-HV-magnitude
+    part. "both" keeps every valid row, preserving the old plotting behavior.
+    """
+    valid_rows = [
+        row for row in rows
+        if row.get("before_current_A") is not None and row.get("applied_voltage_V") is not None
+    ]
+    if sweep == "both" or len(valid_rows) < 2:
+        return valid_rows
+
+    hv = [abs(float(row["applied_voltage_V"])) for row in valid_rows]
+    turn_index: int | None = None
+    for idx in range(1, len(hv)):
+        if hv[idx] < hv[idx - 1]:
+            turn_index = idx
+            break
+
+    if turn_index is None:
+        # No down-sweep was detected. Keep all rows rather than silently making
+        # an empty plot for scans that are monotonic or manually specified.
+        return valid_rows
+    if sweep == "up":
+        return valid_rows[:turn_index]
+    if sweep == "down":
+        return valid_rows[turn_index - 1:]
+    raise ValueError(f"Unsupported IV sweep selection: {sweep!r}")
+
+
 def plot_iv_curve(
     rows: list[dict[str, object]],
     plot_path: Path,
     *,
     chip_name: str,
     save_notes: str,
+    sweep: str = "up",
 ) -> None:
     """Draw an IV curve from pre-calibration SMU current readings."""
     import matplotlib
@@ -648,11 +681,8 @@ def plot_iv_curve(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    valid_rows = [
-        row for row in rows
-        if row.get("before_current_A") is not None
-    ]
-    if not valid_rows:
+    selected_rows = select_iv_sweep_rows(rows, sweep)
+    if not selected_rows:
         return
 
     points = sorted(
@@ -660,18 +690,19 @@ def plot_iv_curve(
             abs(float(row["applied_voltage_V"])),
             abs(float(row["before_current_A"])) * 1e6,
         )
-        for row in valid_rows
+        for row in selected_rows
     )
     hv = [point[0] for point in points]
     current_uA = [point[1] for point in points]
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(hv, current_uA, "-", color="#4285F4", linewidth=2.0)
+    ax.plot(hv, current_uA, "o-", color="#4285F4", linewidth=2.0, markersize=4)
     ax.set_xlabel("HV (V)")
     ax.set_ylabel(f"{chip_name} current (µA)")
     title = f"{chip_name} vs HV (V)"
     if save_notes:
         title += f"\n{save_notes}"
+    title += f"\nIV sweep: {sweep} ({len(selected_rows)}/{len([row for row in rows if row.get('before_current_A') is not None])} points)"
     ax.set_title(title)
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
@@ -699,6 +730,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--current-samples", type=int, default=None, help="Number of current readings before calibration. Default/config: 1")
     parser.add_argument("--current-sample-delay", type=float, default=None, help="Delay between repeated current readings [s]. Default/config: 0.1")
     parser.add_argument("--current-stat", default=None, choices=["median", "mean", "first", "last"], help="Statistic used as before_current_A/IV point when multiple readings are taken. Default/config: median")
+    parser.add_argument("--iv-sweep", default=None, choices=["up", "down", "both"], help="Which sweep to draw in the final IV plot. Default/config: up")
     parser.add_argument("--cycle-delay", type=float, default=None, help="Seconds to wait between voltage steps")
     parser.add_argument("--settle", type=float, default=None, help="Seconds to wait after enabling/applying bias before reading current")
     parser.add_argument("--skip-voltage-wait", action="store_true", help="Do not wait for drivers with VMON support to reach requested voltage before current read")
@@ -756,6 +788,7 @@ def main() -> int:
     current_samples = int(cfg_value(config, "current_samples", args.current_samples, DEFAULT_CURRENT_SAMPLES))
     current_sample_delay = float(cfg_value(config, "current_sample_delay", args.current_sample_delay, DEFAULT_CURRENT_SAMPLE_DELAY))
     current_stat = str(cfg_value(config, "current_stat", args.current_stat, DEFAULT_CURRENT_STAT)).lower()
+    iv_sweep = str(cfg_value(config, "iv_sweep", args.iv_sweep, "up")).lower()
 
     steps = build_steps(config, args.voltage, args.voltages, args.current_limit)
     calibration_voltages = selected_calibration_voltages(config, args.calibration_voltages)
@@ -780,6 +813,8 @@ def main() -> int:
         raise ValueError("current_sample_delay must be >= 0")
     if current_stat not in {"median", "mean", "first", "last"}:
         raise ValueError("current_stat must be one of: median, mean, first, last")
+    if iv_sweep not in {"up", "down", "both"}:
+        raise ValueError("iv_sweep must be one of: up, down, both")
     if not i2c_script.exists():
         raise FileNotFoundError(f"I2C calibration script not found: {i2c_script}")
 
@@ -791,6 +826,7 @@ def main() -> int:
     print(f"save_notes={save_notes}")
     print(f"settle={settle:g} s, voltage_wait={voltage_wait}, voltage_tolerance={voltage_tolerance:g} V, cycle_delay={cycle_delay:g} s")
     print(f"current_samples={current_samples}, current_sample_delay={current_sample_delay:g} s, current_stat={current_stat}")
+    print(f"IV plot sweep={iv_sweep}")
     print(
         f"ETROC2 check={check_etroc}, bus={etroc_i2c_bus}, address=0x{etroc_i2c_address:02x}, "
         f"recheck_attempts={etroc_recheck_attempts}, recheck_delay={etroc_recheck_delay:g} s, save_logs={save_logs}"
@@ -1101,8 +1137,8 @@ def main() -> int:
     if iv_sqlite_path is not None:
         if iv_plot_path is not None:
             plot_rows = load_iv_rows_sqlite(iv_sqlite_path, iv_stamp)
-            plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes)
-            print(f"Final IV plot: {iv_plot_path}")
+            plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes, sweep=iv_sweep)
+            print(f"Final IV plot: {iv_plot_path} (sweep={iv_sweep})")
         print(f"Final IV SQLite: {iv_sqlite_path}")
     else:
         print("No SMU was used; no IV SQLite or plot written.")

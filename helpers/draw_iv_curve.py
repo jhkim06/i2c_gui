@@ -89,34 +89,67 @@ def is_bad_current(row: sqlite3.Row, current_col: str, args: argparse.Namespace)
     return False, ""
 
 
-def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, current_col: str, *, title_note: str) -> None:
+def select_iv_sweep_rows(rows: list[sqlite3.Row], current_col: str, sweep: str) -> list[sqlite3.Row]:
+    """Return rows for the requested IV sweep direction.
+
+    "up" is the initial increasing-HV-magnitude part of the scan. "down" starts
+    at the high-voltage turning point and follows the decreasing-HV-magnitude
+    part. "both" keeps every valid row, preserving the old plotting behavior.
+    """
+    valid_rows = [
+        row for row in rows
+        if row["applied_voltage_V"] is not None and row[current_col] is not None
+    ]
+    if sweep == "both" or len(valid_rows) < 2:
+        return valid_rows
+
+    hv = [abs(float(row["applied_voltage_V"])) for row in valid_rows]
+    turn_index: int | None = None
+    for idx in range(1, len(hv)):
+        if hv[idx] < hv[idx - 1]:
+            turn_index = idx
+            break
+
+    if turn_index is None:
+        # Monotonic scans have no separate down-sweep, so keep all rows.
+        return valid_rows
+    if sweep == "up":
+        return valid_rows[:turn_index]
+    if sweep == "down":
+        return valid_rows[turn_index - 1:]
+    raise ValueError(f"Unsupported IV sweep selection: {sweep!r}")
+
+
+def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, current_col: str, *, title_note: str, sweep: str) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    selected = select_iv_sweep_rows(kept, current_col, sweep)
     points = sorted(
         (
             abs(float(row["applied_voltage_V"])),
             abs(float(row[current_col])) * 1e6,
+            int(row["step"]),
+            int(row["id"]),
             row,
         )
-        for row in kept
-        if row["applied_voltage_V"] is not None and row[current_col] is not None
+        for row in selected
     )
     if not points:
-        raise RuntimeError("No valid IV points left after filtering")
+        raise RuntimeError("No valid IV points left after filtering/sweep selection")
 
     hv = [p[0] for p in points]
     current_uA = [p[1] for p in points]
-    chip_name = kept[0]["chip_name"] or "unknown hybrid"
-    run_timestamp = kept[0]["run_timestamp"]
+    chip_name = selected[0]["chip_name"] or "unknown hybrid"
+    run_timestamp = selected[0]["run_timestamp"]
 
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(hv, current_uA, "o-", color="#4285F4", linewidth=2.0, markersize=4)
     ax.set_xlabel("HV magnitude (V)")
     ax.set_ylabel(f"{chip_name} current |I| (µA)")
-    title = f"IV curve: {chip_name}\nrun {run_timestamp}"
+    title = f"IV curve: {chip_name}\nrun {run_timestamp}\nIV sweep: {sweep} ({len(selected)}/{len(kept)} kept points)"
     if title_note:
         title += f" — {title_note}"
     ax.set_title(title)
@@ -138,6 +171,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--datetime", required=True, help="Run datetime/prefix, e.g. 20260625_212514 or '2026-06-25 21:25'")
     parser.add_argument("--hybrid", "--chip", dest="hybrid", required=True, help="Hybrid/chip name stored in chip_name")
     parser.add_argument("--current-column", default="before_current_A", choices=["before_current_A", "after_current_A"], help="Current column to plot")
+    parser.add_argument("--iv-sweep", default="up", choices=["up", "down", "both"], help="Which sweep to draw: up, down, or both. Default: up")
     parser.add_argument("--output", type=Path, default=None, help="Output PNG path. Default: helpers/output/IVcurve_<datetime>_<hybrid>.png")
     parser.add_argument("--case-sensitive", action="store_true", help="Require exact case match for hybrid/chip name")
 
@@ -174,11 +208,12 @@ def main() -> int:
         prefix = normalize_datetime_prefix(args.datetime).rstrip("_")
         args.output = args.db.parent / f"IVcurve_{safe_name(prefix)}_{safe_name(args.hybrid)}.png"
 
-    note = f"{len(kept)}/{len(rows)} points kept"
-    make_plot(rows, kept, args.output, args.current_column, title_note=note)
+    selected = select_iv_sweep_rows(kept, args.current_column, args.iv_sweep)
+    note = f"{len(kept)}/{len(rows)} points kept before sweep selection"
+    make_plot(rows, kept, args.output, args.current_column, title_note=note, sweep=args.iv_sweep)
 
     print(f"Wrote {args.output}")
-    print(f"Matched rows: {len(rows)}, kept: {len(kept)}, dropped: {len(dropped)}")
+    print(f"Matched rows: {len(rows)}, kept: {len(kept)}, selected for {args.iv_sweep} sweep: {len(selected)}, dropped: {len(dropped)}")
     if dropped:
         reasons: dict[str, int] = {}
         for _, reason in dropped:
