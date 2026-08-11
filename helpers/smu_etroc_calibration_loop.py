@@ -521,6 +521,19 @@ def summarize_current_samples(samples: list[float], *, statistic: str) -> dict[s
     }
 
 
+def parse_first_float(value: str) -> float | None:
+    """Return the first parseable float from a comma/semicolon separated response."""
+    for token in value.replace(";", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            return float(token)
+        except ValueError:
+            continue
+    return None
+
+
 def read_smu_voltage(smu: Any) -> tuple[float | None, str]:
     """Read SMU voltage/voltage monitor when supported.
 
