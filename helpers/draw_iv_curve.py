@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Draw an IV curve from helpers/output/IVHistory.sqlite.
+"""Draw IV curves from helpers/output/IVHistory.sqlite.
 
-Example:
+Examples:
+  # Re-draw every stored IV measurement into ETROC-figures/IV
+  python helpers/draw_iv_curve.py --all
+
+  # Re-draw one run
   python helpers/draw_iv_curve.py --datetime 20260625_212514 --hybrid W12_21+87694_9
   python helpers/draw_iv_curve.py --datetime "2026-06-25 21:25" --hybrid W12_21+87694_9
 
@@ -18,7 +22,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+REPO_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB = Path(__file__).resolve().parent / "output" / "IVHistory.sqlite"
+DEFAULT_OUTPUT_DIR = REPO_DIR / "ETROC-figures" / "IV"
 
 
 def normalize_datetime_prefix(value: str) -> str:
@@ -51,6 +57,21 @@ def fetch_rows(db_path: Path, datetime_value: str, hybrid: str, *, ignore_case: 
     ).fetchall()
     conn.close()
     return rows
+
+
+def fetch_all_run_keys(db_path: Path) -> list[tuple[str, str]]:
+    """Return every distinct IV run key as (run_timestamp, chip_name)."""
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        """
+        SELECT run_timestamp, COALESCE(chip_name, 'unknown') AS chip_name
+        FROM iv_measurements
+        GROUP BY run_timestamp, chip_name
+        ORDER BY run_timestamp, chip_name
+        """
+    ).fetchall()
+    conn.close()
+    return [(str(run_timestamp), str(chip_name)) for run_timestamp, chip_name in rows]
 
 
 def is_bad_current(row: sqlite3.Row, current_col: str, args: argparse.Namespace) -> tuple[bool, str]:
@@ -165,14 +186,42 @@ def safe_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.+-]+", "_", text).strip("_")
 
 
+def default_output_path(output_dir: Path, run_timestamp: str, hybrid: str) -> Path:
+    """Build the standard IV-figure filename under ETROC-figures/IV."""
+    return output_dir / f"{safe_name(hybrid)}_IV_curve_{safe_name(run_timestamp)}.png"
+
+
+def filter_rows(rows: list[sqlite3.Row], args: argparse.Namespace) -> tuple[list[sqlite3.Row], list[tuple[sqlite3.Row, str]]]:
+    kept: list[sqlite3.Row] = []
+    dropped: list[tuple[sqlite3.Row, str]] = []
+    for row in rows:
+        bad, reason = is_bad_current(row, args.current_column, args)
+        if bad:
+            dropped.append((row, reason))
+        else:
+            kept.append(row)
+    return kept, dropped
+
+
+def draw_one_run(rows: list[sqlite3.Row], args: argparse.Namespace, output: Path) -> tuple[int, int, int]:
+    """Filter and draw one IV run. Returns (kept, selected, dropped)."""
+    kept, dropped = filter_rows(rows, args)
+    selected = select_iv_sweep_rows(kept, args.current_column, args.iv_plot_sweep)
+    note = f"{len(kept)}/{len(rows)} points kept before sweep selection"
+    make_plot(rows, kept, output, args.current_column, title_note=note, sweep=args.iv_plot_sweep)
+    return len(kept), len(selected), len(dropped)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Plot an IV curve from IVHistory.sqlite for a given datetime and hybrid/chip name.")
+    parser = argparse.ArgumentParser(description="Plot IV curves from IVHistory.sqlite.")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"SQLite DB path (default: {DEFAULT_DB})")
-    parser.add_argument("--datetime", required=True, help="Run datetime/prefix, e.g. 20260625_212514 or '2026-06-25 21:25'")
-    parser.add_argument("--hybrid", "--chip", dest="hybrid", required=True, help="Hybrid/chip name stored in chip_name")
+    parser.add_argument("--all", action="store_true", help=f"Re-draw every IV run into --output-dir (default: {DEFAULT_OUTPUT_DIR})")
+    parser.add_argument("--datetime", help="Run datetime/prefix, e.g. 20260625_212514 or '2026-06-25 21:25'")
+    parser.add_argument("--hybrid", "--chip", dest="hybrid", help="Hybrid/chip name stored in chip_name")
     parser.add_argument("--current-column", default="before_current_A", choices=["before_current_A", "after_current_A"], help="Current column to plot")
     parser.add_argument("--iv-plot-sweep", "--iv-sweep", dest="iv_plot_sweep", default="up", choices=["up", "down", "both"], help="Which sweep to draw in the IV plot: up, down, or both. Default: up. --iv-sweep is kept as a deprecated alias.")
-    parser.add_argument("--output", type=Path, default=None, help="Output PNG path. Default: helpers/output/IVcurve_<datetime>_<hybrid>.png")
+    parser.add_argument("--output", type=Path, default=None, help="Output PNG path for a single run. Default: ETROC-figures/IV/<hybrid>_IV_curve_<datetime>.png")
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help=f"Directory for --all outputs (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--case-sensitive", action="store_true", help="Require exact case match for hybrid/chip name")
 
     parser.add_argument("--keep-compliance", dest="drop_compliance", action="store_false", help="Keep points close to current_limit_A")
@@ -191,44 +240,60 @@ def main() -> int:
     if not args.db.exists():
         raise FileNotFoundError(args.db)
 
+    if args.all:
+        run_keys = fetch_all_run_keys(args.db)
+        if not run_keys:
+            raise SystemExit(f"No IV runs found in {args.db}")
+
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        written = 0
+        skipped: list[tuple[str, str, str]] = []
+        for run_timestamp, hybrid in run_keys:
+            rows = fetch_rows(args.db, run_timestamp, hybrid, ignore_case=False)
+            output = default_output_path(args.output_dir, run_timestamp, hybrid)
+            try:
+                kept, selected, dropped = draw_one_run(rows, args, output)
+            except Exception as exc:  # keep batch re-draw going if one bad run exists
+                skipped.append((run_timestamp, hybrid, str(exc)))
+                print(f"SKIP {run_timestamp} {hybrid}: {exc}")
+                continue
+            written += 1
+            print(
+                f"Wrote {output} "
+                f"(rows={len(rows)}, kept={kept}, selected_{args.iv_plot_sweep}={selected}, dropped={dropped})"
+            )
+
+        print(f"\nDone. Wrote {written}/{len(run_keys)} IV plots into {args.output_dir}")
+        if skipped:
+            print("Skipped runs:")
+            for run_timestamp, hybrid, reason in skipped:
+                print(f"  {run_timestamp} {hybrid}: {reason}")
+        return 0 if not skipped else 1
+
+    if not args.datetime or not args.hybrid:
+        raise SystemExit("Either use --all, or provide both --datetime and --hybrid/--chip")
+
     rows = fetch_rows(args.db, args.datetime, args.hybrid, ignore_case=not args.case_sensitive)
     if not rows:
         raise SystemExit(f"No rows found for datetime={args.datetime!r}, hybrid={args.hybrid!r} in {args.db}")
 
-    kept: list[sqlite3.Row] = []
-    dropped: list[tuple[sqlite3.Row, str]] = []
-    for row in rows:
-        bad, reason = is_bad_current(row, args.current_column, args)
-        if bad:
-            dropped.append((row, reason))
-        else:
-            kept.append(row)
-
     if args.output is None:
         prefix = normalize_datetime_prefix(args.datetime).rstrip("_")
-        args.output = args.db.parent / f"IVcurve_{safe_name(prefix)}_{safe_name(args.hybrid)}.png"
+        args.output = default_output_path(args.output_dir, prefix, args.hybrid)
 
-    selected = select_iv_sweep_rows(kept, args.current_column, args.iv_plot_sweep)
-    note = f"{len(kept)}/{len(rows)} points kept before sweep selection"
-    make_plot(rows, kept, args.output, args.current_column, title_note=note, sweep=args.iv_plot_sweep)
+    kept, selected, dropped = draw_one_run(rows, args, args.output)
 
     print(f"Wrote {args.output}")
-    print(f"Matched rows: {len(rows)}, kept: {len(kept)}, selected for {args.iv_plot_sweep} plot sweep: {len(selected)}, dropped: {len(dropped)}")
-    if dropped:
-        reasons: dict[str, int] = {}
-        for _, reason in dropped:
-            reasons[reason] = reasons.get(reason, 0) + 1
-        print("Dropped summary:")
-        for reason, count in sorted(reasons.items()):
-            print(f"  {count:3d}  {reason}")
+    print(f"Matched rows: {len(rows)}, kept: {kept}, selected for {args.iv_plot_sweep} plot sweep: {selected}, dropped: {dropped}")
 
     if args.print_points:
+        kept_rows, dropped_rows = filter_rows(rows, args)
         print("\nKept points:")
-        for row in kept:
+        for row in kept_rows:
             print(f"  step={row['step']:>3} V={row['applied_voltage_V']:>8g} I={row[args.current_column]:.6g} A raw={row['before_raw']}")
-        if dropped:
+        if dropped_rows:
             print("\nDropped rows:")
-            for row, reason in dropped:
+            for row, reason in dropped_rows:
                 print(f"  step={row['step']:>3} V={row['applied_voltage_V']:>8g} I={row[args.current_column]} A reason={reason} raw={row['before_raw']}")
 
     return 0
