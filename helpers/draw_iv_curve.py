@@ -9,6 +9,12 @@ Examples:
   python helpers/draw_iv_curve.py --datetime 20260625_212514 --hybrid W12_21+87694_9
   python helpers/draw_iv_curve.py --datetime "2026-06-25 21:25" --hybrid W12_21+87694_9
 
+  # Re-draw selected chip/date pairs
+  python helpers/draw_iv_curve.py --list W03_100:20260811_221126 W03_72:20260811_221122
+
+  # Draw selected chip/date pairs together in one plot
+  python helpers/draw_iv_curve.py --list W03_100:20260811_221126 W03_72:20260811_221122 --one-plot
+
 The script is intentionally separate from the SMU scan loop so old IV data can be
 re-plotted after removing obvious SMU/compliance overflow points.
 """
@@ -57,6 +63,26 @@ def fetch_rows(db_path: Path, datetime_value: str, hybrid: str, *, ignore_case: 
     ).fetchall()
     conn.close()
     return rows
+
+
+def parse_chip_datetime_selection(value: str) -> tuple[str, str]:
+    """Parse CHIP:DATETIME selection strings used by --list."""
+    if ":" not in value:
+        raise argparse.ArgumentTypeError(
+            f"selection {value!r} must use CHIP:DATETIME, e.g. W03_100:20260811_221126"
+        )
+    chip, datetime_value = value.split(":", 1)
+    chip = chip.strip()
+    datetime_value = datetime_value.strip()
+    if not chip or not datetime_value:
+        raise argparse.ArgumentTypeError(
+            f"selection {value!r} must use non-empty CHIP:DATETIME"
+        )
+    try:
+        normalize_datetime_prefix(datetime_value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"selection {value!r} has invalid datetime: {exc}") from exc
+    return chip, datetime_value
 
 
 def fetch_all_run_keys(db_path: Path) -> list[tuple[str, str]]:
@@ -141,14 +167,10 @@ def select_iv_sweep_rows(rows: list[sqlite3.Row], current_col: str, sweep: str) 
     raise ValueError(f"Unsupported IV sweep selection: {sweep!r}")
 
 
-def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, current_col: str, *, title_note: str, sweep: str) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    selected = select_iv_sweep_rows(kept, current_col, sweep)
-    points = sorted(
+def iv_points_for_plot(rows: list[sqlite3.Row], current_col: str, sweep: str) -> list[tuple[float, float, int, int, sqlite3.Row]]:
+    """Return sorted (|HV|, |I| in µA, step, id, row) points for plotting."""
+    selected = select_iv_sweep_rows(rows, current_col, sweep)
+    return sorted(
         (
             abs(float(row["applied_voltage_V"])),
             abs(float(row[current_col])) * 1e6,
@@ -158,6 +180,16 @@ def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, cu
         )
         for row in selected
     )
+
+
+def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, current_col: str, *, title_note: str, sweep: str) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    selected = select_iv_sweep_rows(kept, current_col, sweep)
+    points = iv_points_for_plot(kept, current_col, sweep)
     if not points:
         raise RuntimeError("No valid IV points left after filtering/sweep selection")
 
@@ -176,6 +208,34 @@ def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, cu
     ax.set_title(title)
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
+    fig.tight_layout()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=150)
+    plt.close(fig)
+
+
+def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: str, *, sweep: str) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9, 6.5))
+    for curve in curves:
+        points = iv_points_for_plot(curve["kept_rows"], current_col, sweep)
+        if not points:
+            raise RuntimeError(f"No valid IV points left for {curve['hybrid']}:{curve['datetime']}")
+        hv = [p[0] for p in points]
+        current_uA = [p[1] for p in points]
+        label = f"{curve['hybrid']} ({curve['run_timestamp']})"
+        ax.plot(hv, current_uA, "o-", linewidth=2.0, markersize=4, label=label)
+
+    ax.set_xlabel("HV magnitude (V)")
+    ax.set_ylabel("Current |I| (µA)")
+    ax.set_title(f"IV curves — {len(curves)} runs\nIV sweep: {sweep}")
+    ax.grid(True, color="#d9d9d9", linewidth=1.0)
+    ax.set_axisbelow(True)
+    ax.legend(fontsize="small")
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)
@@ -212,10 +272,66 @@ def draw_one_run(rows: list[sqlite3.Row], args: argparse.Namespace, output: Path
     return len(kept), len(selected), len(dropped)
 
 
+def draw_selection(datetime_value: str, hybrid: str, args: argparse.Namespace, *, output: Path | None = None) -> tuple[Path, int, int, int, int]:
+    """Draw one selected run. Returns (output, matched, kept, selected, dropped)."""
+    rows = fetch_rows(args.db, datetime_value, hybrid, ignore_case=not args.case_sensitive)
+    if not rows:
+        raise RuntimeError(f"No rows found for datetime={datetime_value!r}, hybrid={hybrid!r} in {args.db}")
+
+    if output is None:
+        prefix = normalize_datetime_prefix(datetime_value).rstrip("_")
+        output = default_output_path(args.output_dir, prefix, hybrid)
+
+    kept, selected, dropped = draw_one_run(rows, args, output)
+    return output, len(rows), kept, selected, dropped
+
+
+def collect_selection_for_combined_plot(datetime_value: str, hybrid: str, args: argparse.Namespace) -> dict[str, Any]:
+    """Fetch/filter one selected run for a combined plot."""
+    rows = fetch_rows(args.db, datetime_value, hybrid, ignore_case=not args.case_sensitive)
+    if not rows:
+        raise RuntimeError(f"No rows found for datetime={datetime_value!r}, hybrid={hybrid!r} in {args.db}")
+
+    kept, dropped = filter_rows(rows, args)
+    selected = select_iv_sweep_rows(kept, args.current_column, args.iv_plot_sweep)
+    if not selected:
+        raise RuntimeError(f"No valid IV points left after filtering/sweep selection for {hybrid}:{datetime_value}")
+
+    return {
+        "datetime": datetime_value,
+        "hybrid": hybrid,
+        "run_timestamp": selected[0]["run_timestamp"],
+        "matched": len(rows),
+        "kept": len(kept),
+        "selected": len(selected),
+        "dropped": len(dropped),
+        "kept_rows": kept,
+    }
+
+
+def draw_combined_selection(selections: list[tuple[str, str]], args: argparse.Namespace, output: Path) -> tuple[Path, list[dict[str, Any]], list[tuple[str, str, str]]]:
+    """Draw selected CHIP:DATETIME pairs together in one plot."""
+    curves: list[dict[str, Any]] = []
+    skipped: list[tuple[str, str, str]] = []
+    for hybrid, datetime_value in selections:
+        try:
+            curves.append(collect_selection_for_combined_plot(datetime_value, hybrid, args))
+        except Exception as exc:
+            skipped.append((datetime_value, hybrid, str(exc)))
+
+    if not curves:
+        raise RuntimeError("No selected IV curves could be drawn")
+
+    make_combined_plot(curves, output, args.current_column, sweep=args.iv_plot_sweep)
+    return output, curves, skipped
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Plot IV curves from IVHistory.sqlite.")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"SQLite DB path (default: {DEFAULT_DB})")
     parser.add_argument("--all", action="store_true", help=f"Re-draw every IV run into --output-dir (default: {DEFAULT_OUTPUT_DIR})")
+    parser.add_argument("--list", nargs="+", type=parse_chip_datetime_selection, metavar="CHIP:DATETIME", help="Re-draw selected chip/date pairs, e.g. --list W03_100:20260811_221126 W03_72:20260811_221122")
+    parser.add_argument("--one-plot", "--combined", dest="one_plot", action="store_true", help="With --list, draw all selected IV curves together in one output plot")
     parser.add_argument("--datetime", help="Run datetime/prefix, e.g. 20260625_212514 or '2026-06-25 21:25'")
     parser.add_argument("--hybrid", "--chip", dest="hybrid", help="Hybrid/chip name stored in chip_name")
     parser.add_argument("--current-column", default="before_current_A", choices=["before_current_A", "after_current_A"], help="Current column to plot")
@@ -239,6 +355,16 @@ def main() -> int:
     args = build_arg_parser().parse_args()
     if not args.db.exists():
         raise FileNotFoundError(args.db)
+
+    modes = sum(bool(value) for value in (args.all, args.list, args.datetime or args.hybrid))
+    if modes != 1:
+        raise SystemExit("Use exactly one mode: --all, --list CHIP:DATETIME [...], or both --datetime and --hybrid/--chip")
+
+    if args.one_plot and not args.list:
+        raise SystemExit("--one-plot/--combined can only be used with --list")
+
+    if args.output is not None and (args.all or args.list and len(args.list) > 1 and not args.one_plot):
+        raise SystemExit("--output can only be used when drawing one run, or with --list --one-plot")
 
     if args.all:
         run_keys = fetch_all_run_keys(args.db)
@@ -270,23 +396,64 @@ def main() -> int:
                 print(f"  {run_timestamp} {hybrid}: {reason}")
         return 0 if not skipped else 1
 
+    if args.list:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        if args.one_plot:
+            output = args.output or (args.output_dir / "selected_IV_curves.png")
+            try:
+                output, curves, skipped = draw_combined_selection(args.list, args, output)
+            except Exception as exc:
+                raise SystemExit(str(exc)) from exc
+            print(f"Wrote {output}")
+            for curve in curves:
+                print(
+                    f"  {curve['hybrid']}:{curve['datetime']} "
+                    f"(run={curve['run_timestamp']}, rows={curve['matched']}, kept={curve['kept']}, "
+                    f"selected_{args.iv_plot_sweep}={curve['selected']}, dropped={curve['dropped']})"
+                )
+            if skipped:
+                print("Skipped selections:")
+                for datetime_value, hybrid, reason in skipped:
+                    print(f"  {hybrid}:{datetime_value}: {reason}")
+            return 0 if not skipped else 1
+
+        written = 0
+        skipped: list[tuple[str, str, str]] = []
+        for hybrid, datetime_value in args.list:
+            try:
+                output, matched, kept, selected, dropped = draw_selection(
+                    datetime_value,
+                    hybrid,
+                    args,
+                    output=args.output if len(args.list) == 1 else None,
+                )
+            except Exception as exc:
+                skipped.append((datetime_value, hybrid, str(exc)))
+                print(f"SKIP {datetime_value} {hybrid}: {exc}")
+                continue
+            written += 1
+            print(
+                f"Wrote {output} "
+                f"(rows={matched}, kept={kept}, selected_{args.iv_plot_sweep}={selected}, dropped={dropped})"
+            )
+
+        print(f"\nDone. Wrote {written}/{len(args.list)} selected IV plots into {args.output_dir}")
+        if skipped:
+            print("Skipped selections:")
+            for datetime_value, hybrid, reason in skipped:
+                print(f"  {hybrid}:{datetime_value}: {reason}")
+        return 0 if not skipped else 1
+
     if not args.datetime or not args.hybrid:
-        raise SystemExit("Either use --all, or provide both --datetime and --hybrid/--chip")
+        raise SystemExit("Either use --all, --list CHIP:DATETIME [...], or provide both --datetime and --hybrid/--chip")
 
-    rows = fetch_rows(args.db, args.datetime, args.hybrid, ignore_case=not args.case_sensitive)
-    if not rows:
-        raise SystemExit(f"No rows found for datetime={args.datetime!r}, hybrid={args.hybrid!r} in {args.db}")
+    output, matched, kept, selected, dropped = draw_selection(args.datetime, args.hybrid, args, output=args.output)
 
-    if args.output is None:
-        prefix = normalize_datetime_prefix(args.datetime).rstrip("_")
-        args.output = default_output_path(args.output_dir, prefix, args.hybrid)
-
-    kept, selected, dropped = draw_one_run(rows, args, args.output)
-
-    print(f"Wrote {args.output}")
-    print(f"Matched rows: {len(rows)}, kept: {kept}, selected for {args.iv_plot_sweep} plot sweep: {selected}, dropped: {dropped}")
+    print(f"Wrote {output}")
+    print(f"Matched rows: {matched}, kept: {kept}, selected for {args.iv_plot_sweep} plot sweep: {selected}, dropped: {dropped}")
 
     if args.print_points:
+        rows = fetch_rows(args.db, args.datetime, args.hybrid, ignore_case=not args.case_sensitive)
         kept_rows, dropped_rows = filter_rows(rows, args)
         print("\nKept points:")
         for row in kept_rows:
