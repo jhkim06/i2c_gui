@@ -15,6 +15,10 @@ Examples:
   # Draw selected chip/date pairs together in one plot
   python helpers/draw_iv_curve.py --list W03_100:20260811_221126 W03_72:20260811_221122 --one-plot
 
+  # Draw grouped selections from a text file with columns: CHIP DATETIME LABEL
+  # This writes one combined plot per label, e.g. FBK_IV_curves.png and HPK_IV_curves.png
+  python helpers/draw_iv_curve.py --group-file iv_groups.txt
+
 The script is intentionally separate from the SMU scan loop so old IV data can be
 re-plotted after removing obvious SMU/compliance overflow points.
 """
@@ -83,6 +87,37 @@ def parse_chip_datetime_selection(value: str) -> tuple[str, str]:
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"selection {value!r} has invalid datetime: {exc}") from exc
     return chip, datetime_value
+
+
+def parse_group_file(path: Path) -> dict[str, list[tuple[str, str]]]:
+    """Parse a whitespace-delimited selection file with lines: CHIP DATETIME LABEL.
+
+    Blank lines and lines starting with # are ignored. Inline comments are also
+    allowed after the three required columns.
+    """
+    groups: dict[str, list[tuple[str, str]]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                raise ValueError(
+                    f"{path}:{line_number}: expected at least 3 columns: CHIP DATETIME LABEL"
+                )
+            chip, datetime_value, label = parts[:3]
+            try:
+                normalize_datetime_prefix(datetime_value)
+            except ValueError as exc:
+                raise ValueError(f"{path}:{line_number}: invalid datetime {datetime_value!r}: {exc}") from exc
+            if not chip or not label:
+                raise ValueError(f"{path}:{line_number}: CHIP and LABEL must be non-empty")
+            groups.setdefault(label, []).append((chip, datetime_value))
+
+    if not groups:
+        raise ValueError(f"No grouped IV selections found in {path}")
+    return groups
 
 
 def fetch_all_run_keys(db_path: Path) -> list[tuple[str, str]]:
@@ -214,7 +249,7 @@ def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, cu
     plt.close(fig)
 
 
-def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: str, *, sweep: str) -> None:
+def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: str, *, sweep: str, title_label: str | None = None) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -230,9 +265,10 @@ def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: 
         label = f"{curve['hybrid']} ({curve['run_timestamp']})"
         ax.plot(hv, current_uA, "o-", linewidth=2.0, markersize=4, label=label)
 
-    ax.set_xlabel("HV magnitude (V)")
-    ax.set_ylabel("Current I (µA)")
-    ax.set_title(f"IV curves — {len(curves)} runs\nIV sweep: {sweep}")
+    ax.set_xlabel("Bias Voltage (V)")
+    ax.set_ylabel("Current (µA)")
+    title_prefix = f"{title_label} IV curves" if title_label else "IV curves"
+    ax.set_title(f"{title_prefix} — {len(curves)} runs\nIV sweep: {sweep}")
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
     ax.legend(fontsize="small")
@@ -309,7 +345,7 @@ def collect_selection_for_combined_plot(datetime_value: str, hybrid: str, args: 
     }
 
 
-def draw_combined_selection(selections: list[tuple[str, str]], args: argparse.Namespace, output: Path) -> tuple[Path, list[dict[str, Any]], list[tuple[str, str, str]]]:
+def draw_combined_selection(selections: list[tuple[str, str]], args: argparse.Namespace, output: Path, *, title_label: str | None = None) -> tuple[Path, list[dict[str, Any]], list[tuple[str, str, str]]]:
     """Draw selected CHIP:DATETIME pairs together in one plot."""
     curves: list[dict[str, Any]] = []
     skipped: list[tuple[str, str, str]] = []
@@ -322,7 +358,7 @@ def draw_combined_selection(selections: list[tuple[str, str]], args: argparse.Na
     if not curves:
         raise RuntimeError("No selected IV curves could be drawn")
 
-    make_combined_plot(curves, output, args.current_column, sweep=args.iv_plot_sweep)
+    make_combined_plot(curves, output, args.current_column, sweep=args.iv_plot_sweep, title_label=title_label)
     return output, curves, skipped
 
 
@@ -331,6 +367,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"SQLite DB path (default: {DEFAULT_DB})")
     parser.add_argument("--all", action="store_true", help=f"Re-draw every IV run into --output-dir (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--list", nargs="+", type=parse_chip_datetime_selection, metavar="CHIP:DATETIME", help="Re-draw selected chip/date pairs, e.g. --list W03_100:20260811_221126 W03_72:20260811_221122")
+    parser.add_argument("--group-file", type=Path, help="Text file with whitespace-separated columns: CHIP DATETIME LABEL. Writes one combined IV plot per LABEL, e.g. FBK and HPK.")
     parser.add_argument("--one-plot", "--combined", dest="one_plot", action="store_true", help="With --list, draw all selected IV curves together in one output plot")
     parser.add_argument("--datetime", help="Run datetime/prefix, e.g. 20260625_212514 or '2026-06-25 21:25'")
     parser.add_argument("--hybrid", "--chip", dest="hybrid", help="Hybrid/chip name stored in chip_name")
@@ -356,14 +393,14 @@ def main() -> int:
     if not args.db.exists():
         raise FileNotFoundError(args.db)
 
-    modes = sum(bool(value) for value in (args.all, args.list, args.datetime or args.hybrid))
+    modes = sum(bool(value) for value in (args.all, args.list, args.group_file, args.datetime or args.hybrid))
     if modes != 1:
-        raise SystemExit("Use exactly one mode: --all, --list CHIP:DATETIME [...], or both --datetime and --hybrid/--chip")
+        raise SystemExit("Use exactly one mode: --all, --list CHIP:DATETIME [...], --group-file FILE, or both --datetime and --hybrid/--chip")
 
     if args.one_plot and not args.list:
         raise SystemExit("--one-plot/--combined can only be used with --list")
 
-    if args.output is not None and (args.all or args.list and len(args.list) > 1 and not args.one_plot):
+    if args.output is not None and (args.all or args.group_file or args.list and len(args.list) > 1 and not args.one_plot):
         raise SystemExit("--output can only be used when drawing one run, or with --list --one-plot")
 
     if args.all:
@@ -395,6 +432,48 @@ def main() -> int:
             for run_timestamp, hybrid, reason in skipped:
                 print(f"  {run_timestamp} {hybrid}: {reason}")
         return 0 if not skipped else 1
+
+    if args.group_file:
+        if not args.group_file.exists():
+            raise FileNotFoundError(args.group_file)
+
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            groups = parse_group_file(args.group_file)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+
+        written = 0
+        all_skipped: list[tuple[str, str, str, str]] = []
+        for label, selections in groups.items():
+            output = args.output_dir / f"{safe_name(label)}_IV_curves.png"
+            try:
+                output, curves, skipped = draw_combined_selection(selections, args, output, title_label=label)
+            except Exception as exc:
+                print(f"SKIP group {label}: {exc}")
+                all_skipped.append((label, "*", "*", str(exc)))
+                continue
+
+            written += 1
+            print(f"Wrote {output}")
+            for curve in curves:
+                print(
+                    f"  [{label}] {curve['hybrid']}:{curve['datetime']} "
+                    f"(run={curve['run_timestamp']}, rows={curve['matched']}, kept={curve['kept']}, "
+                    f"selected_{args.iv_plot_sweep}={curve['selected']}, dropped={curve['dropped']})"
+                )
+            if skipped:
+                print(f"Skipped selections for group {label}:")
+                for datetime_value, hybrid, reason in skipped:
+                    print(f"  [{label}] {hybrid}:{datetime_value}: {reason}")
+                    all_skipped.append((label, datetime_value, hybrid, reason))
+
+        print(f"\nDone. Wrote {written}/{len(groups)} grouped IV plots into {args.output_dir}")
+        if all_skipped:
+            print("Skipped grouped selections:")
+            for label, datetime_value, hybrid, reason in all_skipped:
+                print(f"  [{label}] {hybrid}:{datetime_value}: {reason}")
+        return 0 if not all_skipped else 1
 
     if args.list:
         args.output_dir.mkdir(parents=True, exist_ok=True)
