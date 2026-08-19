@@ -11,7 +11,7 @@
   "etroc_i2c_address": "0x60",
   "etroc_recheck_attempts": 2,
   "etroc_recheck_delay": 5,
-  "current_samples": 60,
+  "current_samples": 30,
   "current_sample_delay": 0.1,
   "current_stat": "median",
   "voltages": [

@@ -13,7 +13,7 @@ import os
 import time
 
 
-DEFAULT_DEVICE = "/dev/usbtmc1"
+DEFAULT_DEVICE = "/dev/usbtmc0"
 
 
 class KeithleyUSBTMC:

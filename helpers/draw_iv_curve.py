@@ -231,7 +231,7 @@ def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: 
         ax.plot(hv, current_uA, "o-", linewidth=2.0, markersize=4, label=label)
 
     ax.set_xlabel("HV magnitude (V)")
-    ax.set_ylabel("Current |I| (µA)")
+    ax.set_ylabel("Current I (µA)")
     ax.set_title(f"IV curves — {len(curves)} runs\nIV sweep: {sweep}")
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
