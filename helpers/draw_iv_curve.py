@@ -32,6 +32,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+MAX_LEGEND_ROWS = 5
+
 REPO_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB = Path(__file__).resolve().parent / "output" / "IVHistory.sqlite"
 DEFAULT_OUTPUT_DIR = REPO_DIR / "ETROC-figures" / "IV"
@@ -295,6 +297,13 @@ def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, cu
     plt.close(fig)
 
 
+def legend_columns_for_entries(entry_count: int, *, max_rows: int = MAX_LEGEND_ROWS) -> int:
+    """Return the number of legend columns needed to keep rows bounded."""
+    if entry_count <= 0:
+        return 1
+    return max(1, math.ceil(entry_count / max_rows))
+
+
 def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: str, *, sweep: str, title_label: str | None = None) -> None:
     import matplotlib
 
@@ -317,7 +326,7 @@ def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: 
     ax.set_title(f"{title_prefix} — {len(curves)} runs\nIV sweep: {sweep}")
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
-    ax.legend(fontsize="small")
+    ax.legend(fontsize="small", ncols=legend_columns_for_entries(len(curves)))
     scale_y_for_legend(ax)
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
