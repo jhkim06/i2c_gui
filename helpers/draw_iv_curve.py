@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_LEGEND_ROWS = 5
+IV_FIGURE_SIZE = (8, 6)
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB = Path(__file__).resolve().parent / "output" / "IVHistory.sqlite"
@@ -281,7 +282,7 @@ def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, cu
     chip_name = selected[0]["chip_name"] or "unknown hybrid"
     run_timestamp = selected[0]["run_timestamp"]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=IV_FIGURE_SIZE)
     ax.plot(hv, current_uA, "o-", color="#4285F4", linewidth=2.0, markersize=4)
     ax.set_xlabel("HV magnitude (V)")
     ax.set_ylabel(f"{chip_name} current |I| (µA)")
@@ -304,10 +305,12 @@ def legend_columns_for_entries(entry_count: int, *, max_rows: int = MAX_LEGEND_R
     return max(1, math.ceil(entry_count / max_rows))
 
 
-def combined_figure_size(entry_count: int) -> tuple[float, float]:
-    """Return a canvas size wide enough for a <=5-row multi-column legend."""
-    ncols = legend_columns_for_entries(entry_count)
-    return max(9.0, 2.4 * ncols + 1.5), 6.5
+def compact_curve_label(curve: dict[str, Any], duplicate_hybrids: set[str]) -> str:
+    """Return a legend label short enough for fixed-size multi-curve plots."""
+    hybrid = str(curve["hybrid"])
+    if hybrid not in duplicate_hybrids:
+        return hybrid
+    return f"{hybrid} ({curve['run_timestamp']})"
 
 
 def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: str, *, sweep: str, title_label: str | None = None) -> None:
@@ -316,14 +319,19 @@ def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=combined_figure_size(len(curves)))
+    fig, ax = plt.subplots(figsize=IV_FIGURE_SIZE)
+    hybrid_counts: dict[str, int] = {}
+    for curve in curves:
+        hybrid_counts[str(curve["hybrid"])] = hybrid_counts.get(str(curve["hybrid"]), 0) + 1
+    duplicate_hybrids = {hybrid for hybrid, count in hybrid_counts.items() if count > 1}
+
     for curve in curves:
         points = iv_points_for_plot(curve["kept_rows"], current_col, sweep)
         if not points:
             raise RuntimeError(f"No valid IV points left for {curve['hybrid']}:{curve['datetime']}")
         hv = [p[0] for p in points]
         current_uA = [p[1] for p in points]
-        label = f"{curve['hybrid']} ({curve['run_timestamp']})"
+        label = compact_curve_label(curve, duplicate_hybrids)
         ax.plot(hv, current_uA, "o-", linewidth=2.0, markersize=4, label=label)
 
     ax.set_xlabel("Bias Voltage (V)")
@@ -333,7 +341,7 @@ def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: 
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
     legend = ax.legend(
-        fontsize="small",
+        fontsize="x-small",
         ncols=legend_columns_for_entries(len(curves)),
         loc="upper left",
         borderaxespad=0.5,
