@@ -37,6 +37,52 @@ DEFAULT_DB = Path(__file__).resolve().parent / "output" / "IVHistory.sqlite"
 DEFAULT_OUTPUT_DIR = REPO_DIR / "ETROC-figures" / "IV"
 
 
+def scale_y_for_legend(ax: Any, *, max_iterations: int = 12) -> None:
+    """Increase the y-axis upper limit if the legend overlaps plotted data.
+
+    Prefer mplhep's yscale_legend utility when mplhep is available.  Keep a
+    small matplotlib-only fallback so IV plotting still works on DAQ machines
+    where mplhep is not installed.
+    """
+    legend = ax.get_legend()
+    if legend is None:
+        return
+
+    try:
+        import mplhep as hep  # type: ignore[import-not-found]
+
+        hep.yscale_legend(ax=ax, soft_fail=True, N=max_iterations)
+        return
+    except Exception:
+        pass
+
+    fig = ax.figure
+
+    def legend_overlaps_plotted_data() -> bool:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        current_legend_bbox = legend.get_window_extent(renderer=renderer).expanded(1.03, 1.08)
+        for line in ax.lines:
+            if not line.get_visible() or len(line.get_xdata(orig=False)) == 0:
+                continue
+            path = line.get_path().transformed(line.get_transform())
+            if path.get_extents().overlaps(current_legend_bbox):
+                return True
+        return False
+
+    if not legend_overlaps_plotted_data():
+        return
+
+    for _ in range(max_iterations):
+        ymin, ymax = ax.get_ylim()
+        if ax.get_yscale() == "log" and ymin > 0 and ymax > 0:
+            ax.set_ylim(ymin, ymax * 1.35)
+        else:
+            ax.set_ylim(ymin, ymin + (ymax - ymin) * 1.35)
+        if not legend_overlaps_plotted_data():
+            break
+
+
 def normalize_datetime_prefix(value: str) -> str:
     """Return a prefix matching IVHistory run_timestamp format YYYYMMDD_HHMMSS."""
     text = value.strip()
@@ -272,6 +318,7 @@ def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: 
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
     ax.legend(fontsize="small")
+    scale_y_for_legend(ax)
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)
