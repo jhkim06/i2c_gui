@@ -304,13 +304,19 @@ def legend_columns_for_entries(entry_count: int, *, max_rows: int = MAX_LEGEND_R
     return max(1, math.ceil(entry_count / max_rows))
 
 
+def combined_figure_size(entry_count: int) -> tuple[float, float]:
+    """Return a canvas size wide enough for a <=5-row multi-column legend."""
+    ncols = legend_columns_for_entries(entry_count)
+    return max(9.0, 2.4 * ncols + 1.5), 6.5
+
+
 def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: str, *, sweep: str, title_label: str | None = None) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(9, 6.5))
+    fig, ax = plt.subplots(figsize=combined_figure_size(len(curves)))
     for curve in curves:
         points = iv_points_for_plot(curve["kept_rows"], current_col, sweep)
         if not points:
@@ -326,7 +332,18 @@ def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: 
     ax.set_title(f"{title_prefix} — {len(curves)} runs\nIV sweep: {sweep}")
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
-    ax.legend(fontsize="small", ncols=legend_columns_for_entries(len(curves)))
+    legend = ax.legend(
+        fontsize="small",
+        ncols=legend_columns_for_entries(len(curves)),
+        loc="upper left",
+        borderaxespad=0.5,
+        columnspacing=0.9,
+        handlelength=1.4,
+    )
+    # A wide multi-column legend is still inside the axes, so tight_layout does
+    # not need to reserve extra outside space for it.  Keeping it in layout can
+    # squeeze the plot area into a narrow strip for large curve groups.
+    legend.set_in_layout(False)
     scale_y_for_legend(ax)
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
