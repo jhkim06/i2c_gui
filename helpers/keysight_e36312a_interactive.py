@@ -5,22 +5,30 @@ Interactive controller for a Keysight E36312A triple-output DC power supply via 
 Default device: auto-detect /dev/usbtmc* and prefer an instrument whose *IDN? contains E36312A.
 
 Interactive commands:
-  status                 Show output state, set V/I, and measured V/I for channels 1-3
-  on <ch>                Apply the preset voltage/current limit, then turn channel on
-  off <ch>               Turn channel off
-  set <ch> <volt> <amp>  Change the preset for this session only
-  presets                Show current presets
-  help                   Show commands
-  quit                   Exit
+  status                    Show output state, set V/I, and measured V/I for channels 1-3
+  on <ch> [ch ...]          Apply presets, then turn one or more channels on
+  off <ch> [ch ...]         Turn one or more channels off
+  set <ch> <volt> <amp>     Change the preset for this session only
+  presets                   Show current presets
+  help                      Show commands
+  quit                      Exit
+
+Examples:
+  on 1
+  on 1 2
+  on 1,2
+  on 1, on 2
+  off 1 2
 
 Edit DEFAULT_PRESETS below for your usual setup.
 """
 
 from __future__ import annotations
 
+import atexit
 import glob
 import os
-import select
+import readline
 import sys
 import time
 from dataclasses import dataclass
@@ -35,6 +43,7 @@ DEFAULT_PRESETS = {
 
 CHANNELS = (1, 2, 3)
 READ_TIMEOUT_S = 2.0
+HISTORY_PATH = os.path.expanduser("~/.keysight_e36312a_interactive_history")
 
 
 class InstrumentError(RuntimeError):
@@ -118,13 +127,55 @@ class USBTMCInstrument:
         self.write(f"CURR {current:.6g}")
 
     def output(self, ch: int, enabled: bool) -> None:
-        self.select_channel(ch)
-        self.write(f"OUTP {'ON' if enabled else 'OFF'}")
+        self.output_channels([ch], enabled)
+
+    def output_channels(self, channels: list[int], enabled: bool) -> None:
+        channels = unique_channels(channels)
+        state = "ON" if enabled else "OFF"
+        if len(channels) == 1:
+            self.select_channel(channels[0])
+            self.write(f"OUTP {state}")
+            return
+
+        # Use the channel-list form so multiple outputs switch together.
+        channel_list = ",".join(str(ch) for ch in channels)
+        self.write(f"OUTP {state}, (@{channel_list})")
 
 
 def require_channel(ch: int) -> None:
     if ch not in CHANNELS:
         raise ValueError("Channel must be 1, 2, or 3")
+
+
+def unique_channels(channels: list[int]) -> list[int]:
+    unique: list[int] = []
+    for ch in channels:
+        require_channel(ch)
+        if ch not in unique:
+            unique.append(ch)
+    return unique
+
+
+def setup_history() -> None:
+    try:
+        readline.read_history_file(HISTORY_PATH)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    try:
+        readline.set_history_length(1000)
+    except Exception:
+        pass
+
+    def save_history() -> None:
+        try:
+            readline.write_history_file(HISTORY_PATH)
+        except Exception:
+            pass
+
+    atexit.register(save_history)
 
 
 def discover_device() -> Optional[str]:
@@ -189,9 +240,27 @@ def parse_channel(token: str) -> int:
     return ch
 
 
+def parse_channels(tokens: list[str], command: str) -> list[int]:
+    channels: list[int] = []
+    for token in tokens:
+        token = token.strip().lower().strip(",;")
+        if not token or token == command:
+            continue
+        for part in token.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            channels.append(parse_channel(part))
+
+    if not channels:
+        raise ValueError(f"Usage: {command} <ch> [ch ...]")
+    return unique_channels(channels)
+
+
 def interactive_loop(inst: USBTMCInstrument) -> None:
     presets = dict(DEFAULT_PRESETS)
-    print("Connected. Type 'help' for commands.")
+    setup_history()
+    print("Connected. Type 'help' for commands. Use arrow keys for command history.")
     show_status(inst)
     show_presets(presets)
 
@@ -205,53 +274,64 @@ def interactive_loop(inst: USBTMCInstrument) -> None:
         if not line:
             continue
 
-        parts = line.split()
-        cmd = parts[0].lower()
-
+        should_show_status = False
         try:
-            if cmd in {"quit", "exit", "q"}:
-                print("Bye.")
-                return
-            if cmd in {"help", "h", "?"}:
-                print_help()
-            elif cmd in {"status", "st"}:
+            # Allow multiple commands on one line, e.g. "on 1; off 2".
+            for command_line in [item.strip() for item in line.split(";") if item.strip()]:
+                parts = command_line.split()
+                cmd = parts[0].lower().strip(",;")
+
+                if cmd in {"quit", "exit", "q"}:
+                    print("Bye.")
+                    return
+                if cmd in {"help", "h", "?"}:
+                    print_help()
+                elif cmd in {"status", "st"}:
+                    should_show_status = True
+                elif cmd == "presets":
+                    show_presets(presets)
+                elif cmd == "set":
+                    if len(parts) != 4:
+                        print("Usage: set <ch> <volt> <amp>")
+                        continue
+                    ch = parse_channel(parts[1])
+                    voltage = float(parts[2])
+                    current = float(parts[3])
+                    if voltage < 0 or current < 0:
+                        print("Voltage/current must be non-negative.")
+                        continue
+                    presets[ch] = (voltage, current)
+                    print(f"Preset CH{ch} = {voltage:g} V, {current:g} A")
+                    should_show_status = True
+                elif cmd == "on":
+                    channels = parse_channels(parts[1:], "on")
+                    missing = [ch for ch in channels if presets.get(ch) is None]
+                    if missing:
+                        print(f"No preset for: {', '.join(f'CH{ch}' for ch in missing)}. Use: set <ch> <volt> <amp>")
+                        continue
+
+                    for ch in channels:
+                        voltage, current = presets[ch]
+                        inst.configure_channel(ch, voltage, current)
+                    inst.output_channels(channels, True)
+                    print(
+                        "ON: "
+                        + ", ".join(
+                            f"CH{ch} at {presets[ch][0]:g} V with {presets[ch][1]:g} A current limit"
+                            for ch in channels
+                        )
+                    )
+                    should_show_status = True
+                elif cmd == "off":
+                    channels = parse_channels(parts[1:], "off")
+                    inst.output_channels(channels, False)
+                    print("OFF: " + ", ".join(f"CH{ch}" for ch in channels))
+                    should_show_status = True
+                else:
+                    print("Unknown command. Type 'help'.")
+
+            if should_show_status:
                 show_status(inst)
-            elif cmd == "presets":
-                show_presets(presets)
-            elif cmd == "set":
-                if len(parts) != 4:
-                    print("Usage: set <ch> <volt> <amp>")
-                    continue
-                ch = parse_channel(parts[1])
-                voltage = float(parts[2])
-                current = float(parts[3])
-                if voltage < 0 or current < 0:
-                    print("Voltage/current must be non-negative.")
-                    continue
-                presets[ch] = (voltage, current)
-                print(f"Preset CH{ch} = {voltage:g} V, {current:g} A")
-            elif cmd == "on":
-                if len(parts) != 2:
-                    print("Usage: on <ch>")
-                    continue
-                ch = parse_channel(parts[1])
-                preset = presets.get(ch)
-                if preset is None:
-                    print(f"CH{ch} has no preset. Use: set {ch} <volt> <amp>")
-                    continue
-                voltage, current = preset
-                inst.configure_channel(ch, voltage, current)
-                inst.output(ch, True)
-                print(f"CH{ch} ON at {voltage:g} V with {current:g} A current limit")
-            elif cmd == "off":
-                if len(parts) != 2:
-                    print("Usage: off <ch>")
-                    continue
-                ch = parse_channel(parts[1])
-                inst.output(ch, False)
-                print(f"CH{ch} OFF")
-            else:
-                print("Unknown command. Type 'help'.")
         except PermissionError:
             print("Permission denied accessing USBTMC device. Try running with proper udev rules or sudo.")
         except Exception as exc:
