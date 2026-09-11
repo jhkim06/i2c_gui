@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -37,7 +38,7 @@ IV_FIGURE_SIZE = (8, 6)
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB = Path(__file__).resolve().parent / "output" / "IVHistory.sqlite"
-DEFAULT_OUTPUT_DIR = REPO_DIR / "ETROC-figures" / "IV"
+DEFAULT_OUTPUT_DIR = Path(os.environ.get("ETROC_FIGURE_ROOT", REPO_DIR / "ETROC-figures")) / "IV"
 
 
 def scale_y_for_legend(ax: Any, *, max_iterations: int = 12) -> None:

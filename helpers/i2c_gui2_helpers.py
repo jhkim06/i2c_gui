@@ -1,6 +1,7 @@
 import i2c_gui2
 import logging
 import datetime
+import os
 import time
 import sys
 
@@ -11,6 +12,12 @@ from pathlib import Path
 from tqdm import tqdm
 
 from i2c_rpi_helper import RPI_I2C_Helper 
+
+
+def etroc_figure_root() -> Path:
+    """Return ETROC plot root, overrideable for rclone/CERNBox mounts."""
+    return Path(os.environ.get("ETROC_FIGURE_ROOT", "../ETROC-figures"))
+
 
 class i2c_connection():
     _chips = None
@@ -670,7 +677,7 @@ class i2c_connection():
         with sqlite3.connect(sqlite_outfile) as sqlconn:
             acc_df.to_sql("acc_scurve", sqlconn, if_exists="append", index=False)
 
-        fig_outdir = Path("../ETROC-figures") / (datetime.date.today().isoformat() + "_Array_Test_Results") / "ACCScurve"
+        fig_outdir = etroc_figure_root() / (datetime.date.today().isoformat() + "_Array_Test_Results") / "ACCScurve"
         fig_outdir.mkdir(exist_ok=True, parents=True)
         self.make_acc_scurve_plots(acc_df, fig_outdir, timestamp, save_notes)
         print(f"Saved ACC S-curve data to {sqlite_outfile}")
@@ -909,7 +916,7 @@ class i2c_connection():
         save_mother_path.mkdir(exist_ok=True, parents=True)
         outfile = save_mother_path / 'BaselineHistory.sqlite'
 
-        fig_outdir = Path('../ETROC-figures')
+        fig_outdir = etroc_figure_root()
         fig_outdir = fig_outdir / (datetime.date.today().isoformat() + '_Array_Test_Results')
         fig_outdir.mkdir(exist_ok=True, parents=True)
 

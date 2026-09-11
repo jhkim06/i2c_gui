@@ -108,7 +108,7 @@ from smu_keithley_2400 import connect_keithley_2400
 
 HELPERS_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = HELPERS_DIR / "output"
-DEFAULT_FIGURE_ROOT = HELPERS_DIR.parent / "ETROC-figures"
+DEFAULT_FIGURE_ROOT = Path(os.environ.get("ETROC_FIGURE_ROOT", HELPERS_DIR.parent / "ETROC-figures"))
 DEFAULT_I2C_SCRIPT = HELPERS_DIR / "i2c_test_with_rpi.py"
 DEFAULT_CURRENT_LIMIT = 100e-6
 DEFAULT_SETTLE = 1.0
