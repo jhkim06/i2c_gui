@@ -55,46 +55,47 @@ class USBTMCInstrument:
     def __init__(self, path: str, timeout_s: float = READ_TIMEOUT_S):
         self.path = path
         self.timeout_s = timeout_s
-        self.fd: Optional[int] = None
 
     def __enter__(self) -> "USBTMCInstrument":
-        self.fd = os.open(self.path, os.O_RDWR | os.O_NONBLOCK)
+        # Some Linux USBTMC setups, including this E36312A/RPi combination,
+        # do not return query responses on a persistent O_RDWR file descriptor.
+        # Keep the context-manager API, but open/close separately for each
+        # write and read. This matches the working shell pattern:
+        #   printf '*IDN?\n' > /dev/usbtmc0 ; cat /dev/usbtmc0
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
+        return None
 
     def write(self, cmd: str) -> None:
-        if self.fd is None:
-            raise InstrumentError("Instrument is not open")
-        os.write(self.fd, (cmd.rstrip() + "\n").encode("ascii"))
+        with open(self.path, "wb", buffering=0) as f:
+            f.write((cmd.rstrip() + "\n").encode("ascii"))
 
     def read(self) -> str:
-        if self.fd is None:
-            raise InstrumentError("Instrument is not open")
+        fd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            deadline = time.monotonic() + self.timeout_s
+            chunks: list[bytes] = []
+            while time.monotonic() < deadline:
+                remaining = max(0.0, deadline - time.monotonic())
+                readable, _, _ = select.select([fd], [], [], min(0.1, remaining))
+                if not readable:
+                    continue
+                try:
+                    chunk = os.read(fd, 4096)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                if b"\n" in chunk:
+                    break
 
-        deadline = time.monotonic() + self.timeout_s
-        chunks: list[bytes] = []
-        while time.monotonic() < deadline:
-            remaining = max(0.0, deadline - time.monotonic())
-            readable, _, _ = select.select([self.fd], [], [], min(0.1, remaining))
-            if not readable:
-                continue
-            try:
-                chunk = os.read(self.fd, 4096)
-            except BlockingIOError:
-                continue
-            if not chunk:
-                continue
-            chunks.append(chunk)
-            if b"\n" in chunk:
-                break
-
-        if not chunks:
-            raise InstrumentError(f"Timed out reading from {self.path}")
-        return b"".join(chunks).decode(errors="replace").strip()
+            if not chunks:
+                raise InstrumentError(f"Timed out reading from {self.path}")
+            return b"".join(chunks).decode(errors="replace").strip()
+        finally:
+            os.close(fd)
 
     def query(self, cmd: str) -> str:
         self.write(cmd)
