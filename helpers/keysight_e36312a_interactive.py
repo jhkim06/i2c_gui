@@ -72,30 +72,11 @@ class USBTMCInstrument:
             f.write((cmd.rstrip() + "\n").encode("ascii"))
 
     def read(self) -> str:
-        fd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
-        try:
-            deadline = time.monotonic() + self.timeout_s
-            chunks: list[bytes] = []
-            while time.monotonic() < deadline:
-                remaining = max(0.0, deadline - time.monotonic())
-                readable, _, _ = select.select([fd], [], [], min(0.1, remaining))
-                if not readable:
-                    continue
-                try:
-                    chunk = os.read(fd, 4096)
-                except BlockingIOError:
-                    continue
-                if not chunk:
-                    continue
-                chunks.append(chunk)
-                if b"\n" in chunk:
-                    break
-
-            if not chunks:
-                raise InstrumentError(f"Timed out reading from {self.path}")
-            return b"".join(chunks).decode(errors="replace").strip()
-        finally:
-            os.close(fd)
+        # Do not use select()/O_NONBLOCK here. On some Linux USBTMC drivers,
+        # including the tested E36312A setup, select() can report no data even
+        # though a normal blocking readline() returns the response correctly.
+        with open(self.path, "rb", buffering=0) as f:
+            return f.readline().decode(errors="replace").strip()
 
     def query(self, cmd: str) -> str:
         self.write(cmd)
