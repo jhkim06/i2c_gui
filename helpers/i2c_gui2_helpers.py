@@ -57,6 +57,7 @@ class i2c_connection():
                      do_auto_calibration: bool = False,
                      do_disable_and_calibration: bool = False,
                      do_prepare_ws_testing: bool = False,
+                     power_mode: str = "high",
                      ):
 
         for chip_address, chip_name, ws_address in zip(self.chip_addresses, self.chip_names, self.ws_addresses):
@@ -66,10 +67,10 @@ class i2c_connection():
             if( do_pixel_check ): self.pixel_check(chip_address, chip)
             if( do_basic_peripheral_register_check ): self.basic_peripheral_register_check(chip_address, chip)
             if( do_set_chip_peripherals ): self.set_chip_peripherals(chip_address, chip)
-            if( do_disable_all_pixels ): self.disable_all_pixels(chip_address, chip)
+            if( do_disable_all_pixels ): self.disable_all_pixels(chip_address, chip, power_mode=power_mode)
             if( do_auto_calibration ): self.auto_calibration(chip_address, chip_name, chip)
             if ( do_disable_and_calibration ):
-                self.disable_all_pixels(chip_address, chip)
+                self.disable_all_pixels(chip_address, chip, power_mode=power_mode)
                 self.auto_calibration(chip_address, chip_name, chip)
             if( do_prepare_ws_testing ): self.prepare_ws_testing(chip_address, ws_address, chip)
 
@@ -433,10 +434,24 @@ class i2c_connection():
 
     #--------------------------------------------------------------------------#
     # Function 3
-    def disable_all_pixels(self, chip_address, chip: i2c_gui2.ETROC2_Chip = None):
+    def disable_all_pixels(self, chip_address, chip: i2c_gui2.ETROC2_Chip = None, power_mode: str = "high"):
 
         if(chip==None):
             chip: i2c_gui2.ETROC2_Chip = self.get_chip_i2c_connection(chip_address)
+
+        valid_power_modes = ['low', '010', '101', 'high']
+        if power_mode not in valid_power_modes:
+            power_mode = "low"
+
+        IBSel = 0b111
+        if power_mode == "high":
+            IBSel = 0b000
+        elif power_mode == "010":
+            IBSel = 0b010
+        elif power_mode == "101":
+            IBSel = 0b101
+        elif power_mode == "low":
+            IBSel = 0b111
 
         chip.row = 0
         chip.col = 0
@@ -460,7 +475,7 @@ class i2c_connection():
             "upperCal": 0x3ff,
             "lowerCal": 0x3ff,
             "enable_TDC": 0,
-            "IBSel": 0,  # High power mode
+            "IBSel": IBSel,  # Pixel power mode
             "Bypass_THCal": 1,  # Bypass Mode
             "TH_offset": 0x3f,  # Max Offset
             "DAC": 0x3ff,  # Max DAC
@@ -474,7 +489,7 @@ class i2c_connection():
             chip.broadcast = True
             chip.write_all_block("ETROC2", "Pixel Config")
             chip.broadcast = False
-            print(f"Disabled pixels (Bypass, TH-3f DAC-3ff) for chip: {hex(chip_address)}")
+            print(f"Disabled pixels (Bypass, TH-3f DAC-3ff, power_mode={power_mode}) for chip: {hex(chip_address)}")
 
             # Verify broadcast
             print('Verifying Broadcast results')
@@ -505,7 +520,7 @@ class i2c_connection():
 
                     chip.write_all_block("ETROC2", "Pixel Config")
 
-            print(f"Disabled pixels (Bypass, TH-3f DAC-3ff) for chip: {hex(chip_address)}")
+            print(f"Disabled pixels (Bypass, TH-3f DAC-3ff, power_mode={power_mode}) for chip: {hex(chip_address)}")
 
 
     #--------------------------------------------------------------------------#

@@ -21,6 +21,13 @@ parser.add_argument(
 )
 parser.add_argument("--acc_scurve_half_range", type=int, default=40, help="DAC range around BL for ACC S-curve: BL +/- this value")
 parser.add_argument("--acc_scurve_step", type=int, default=1, help="DAC step for ACC S-curve scan")
+parser.add_argument(
+    "--power_mode",
+    type=str,
+    default="high",
+    choices=["low", "010", "101", "high"],
+    help="Pixel power mode used when disabling/configuring pixels before auto-calibration. Use 'low' to keep ETROC in low power mode.",
+)
 args = parser.parse_args()
 
 
@@ -57,14 +64,15 @@ for chip_address in chip_addresses[:]:
     i2c_conn.asyResetGlobalReadout(chip_address, chip=None)
     i2c_conn.asyAlignFastcommand(chip_address, chip=None)
 
-print('Run auto BL and NW calibration')
+print(f'Run auto BL and NW calibration with pixel power_mode={args.power_mode}')
 i2c_conn.config_chips(
     do_pixel_check=False,
     do_basic_peripheral_register_check=False, ### Need to re-visit
     do_disable_all_pixels=False,
     do_auto_calibration=False,
     do_disable_and_calibration=True,
-    do_prepare_ws_testing=False
+    do_prepare_ws_testing=False,
+    power_mode=args.power_mode,
 )
 
 ### Save BL and NW
