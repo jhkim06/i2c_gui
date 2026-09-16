@@ -2,7 +2,7 @@
 """Draw IV curves from helpers/output/IVHistory.sqlite.
 
 Examples:
-  # Re-draw every stored IV measurement into ETROC-figures/IV
+  # Re-draw every stored IV measurement into ETROC_figures/IV
   python helpers/draw_iv_curve.py --all
 
   # Re-draw one run
@@ -38,7 +38,32 @@ IV_FIGURE_SIZE = (8, 6)
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB = Path(__file__).resolve().parent / "output" / "IVHistory.sqlite"
-DEFAULT_OUTPUT_DIR = Path(os.environ.get("ETROC_FIGURE_ROOT", REPO_DIR / "ETROC-figures")) / "IV"
+LOCAL_ETROC_FIGURE_ROOT = REPO_DIR / "ETROC_figures"
+DEFAULT_OUTPUT_DIR = LOCAL_ETROC_FIGURE_ROOT / "IV"
+
+
+def mirror_output_paths(output: Path) -> list[Path]:
+    """Return optional ETROC_FIGURE_ROOT mirror path for a repo-local plot."""
+    env_root = os.environ.get("ETROC_FIGURE_ROOT")
+    if not env_root:
+        return []
+    env_path = Path(env_root).expanduser()
+    try:
+        if env_path.resolve() == LOCAL_ETROC_FIGURE_ROOT.resolve():
+            return []
+        relative = output.resolve().relative_to(LOCAL_ETROC_FIGURE_ROOT.resolve())
+    except (OSError, ValueError):
+        return []
+    return [env_path / relative]
+
+
+def save_figure(fig: Any, output: Path, **kwargs: Any) -> list[Path]:
+    """Save a figure locally and mirror it to ETROC_FIGURE_ROOT when set."""
+    paths = [output, *mirror_output_paths(output)]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, **kwargs)
+    return paths
 
 
 def scale_y_for_legend(ax: Any, *, max_iterations: int = 12) -> None:
@@ -294,8 +319,7 @@ def make_plot(rows: list[sqlite3.Row], kept: list[sqlite3.Row], output: Path, cu
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
     fig.tight_layout()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=150)
+    save_figure(fig, output, dpi=150)
     plt.close(fig)
 
 
@@ -355,8 +379,7 @@ def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: 
     legend.set_in_layout(False)
     scale_y_for_legend(ax)
     fig.tight_layout()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=150)
+    save_figure(fig, output, dpi=150)
     plt.close(fig)
 
 
@@ -365,7 +388,7 @@ def safe_name(text: str) -> str:
 
 
 def default_output_path(output_dir: Path, run_timestamp: str, hybrid: str) -> Path:
-    """Build the standard IV-figure filename under ETROC-figures/IV."""
+    """Build the standard IV-figure filename under ETROC_figures/IV."""
     return output_dir / f"{safe_name(hybrid)}_IV_curve_{safe_name(run_timestamp)}.png"
 
 
@@ -455,7 +478,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hybrid", "--chip", dest="hybrid", help="Hybrid/chip name stored in chip_name")
     parser.add_argument("--current-column", default="before_current_A", choices=["before_current_A", "after_current_A"], help="Current column to plot")
     parser.add_argument("--iv-plot-sweep", "--iv-sweep", dest="iv_plot_sweep", default="up", choices=["up", "down", "both"], help="Which sweep to draw in the IV plot: up, down, or both. Default: up. --iv-sweep is kept as a deprecated alias.")
-    parser.add_argument("--output", type=Path, default=None, help="Output PNG path for a single run. Default: ETROC-figures/IV/<hybrid>_IV_curve_<datetime>.png")
+    parser.add_argument("--output", type=Path, default=None, help="Output PNG path for a single run. Default: ETROC_figures/IV/<hybrid>_IV_curve_<datetime>.png")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help=f"Directory for --all outputs (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--case-sensitive", action="store_true", help="Require exact case match for hybrid/chip name")
 

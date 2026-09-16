@@ -108,7 +108,7 @@ from smu_keithley_2400 import connect_keithley_2400
 
 HELPERS_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = HELPERS_DIR / "output"
-DEFAULT_FIGURE_ROOT = Path(os.environ.get("ETROC_FIGURE_ROOT", HELPERS_DIR.parent / "ETROC-figures"))
+LOCAL_ETROC_FIGURE_ROOT = HELPERS_DIR.parent / "ETROC_figures"
 DEFAULT_I2C_SCRIPT = HELPERS_DIR / "i2c_test_with_rpi.py"
 DEFAULT_CURRENT_LIMIT = 100e-6
 DEFAULT_SETTLE = 1.0
@@ -583,12 +583,27 @@ def safe_filename_part(value: str) -> str:
     return "_".join(part for part in safe.split("_") if part) or "scan"
 
 
-def etroc_figure_dir(chip_name: str | None = None) -> Path:
-    """Return the same dated figure directory used by save_baselines()."""
-    fig_dir = DEFAULT_FIGURE_ROOT / f"{dt.date.today().isoformat()}_Array_Test_Results"
+def etroc_figure_roots() -> list[Path]:
+    """Return plot roots: always local, plus ETROC_FIGURE_ROOT as a mirror."""
+    roots = [LOCAL_ETROC_FIGURE_ROOT]
+    env_root = os.environ.get("ETROC_FIGURE_ROOT")
+    if env_root:
+        env_path = Path(env_root).expanduser()
+        try:
+            is_duplicate = env_path.resolve() == LOCAL_ETROC_FIGURE_ROOT.resolve()
+        except OSError:
+            is_duplicate = env_path == LOCAL_ETROC_FIGURE_ROOT
+        if not is_duplicate:
+            roots.append(env_path)
+    return roots
+
+
+def etroc_figure_dirs(chip_name: str | None = None) -> list[Path]:
+    """Return dated figure directories used by save_baselines()."""
+    fig_dirs = [root / f"{dt.date.today().isoformat()}_Array_Test_Results" for root in etroc_figure_roots()]
     if chip_name:
-        fig_dir = fig_dir / safe_filename_part(chip_name)
-    return fig_dir
+        fig_dirs = [fig_dir / safe_filename_part(chip_name) for fig_dir in fig_dirs]
+    return fig_dirs
 
 
 def save_iv_rows_sqlite(sqlite_path: Path, rows: list[dict[str, object]]) -> None:
@@ -903,7 +918,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     iv_stamp = timestamp_for_file()
     iv_sqlite_path: Path | None = None
-    iv_plot_path: Path | None = None
+    iv_plot_paths: list[Path] = []
     rows: list[dict[str, object]] = []
     exit_code = 0
     stop_scan = False
@@ -1116,7 +1131,7 @@ def main() -> int:
                 if iv_sqlite_path is None:
                     iv_sqlite_path = output_dir / "IVHistory.sqlite"
                     plot_label = safe_filename_part(f"{chip_name}_{save_notes}" if save_notes else chip_name)
-                    iv_plot_path = etroc_figure_dir(chip_name) / f"{plot_label}_IV_curve_{iv_stamp}.png"
+                    iv_plot_paths = [figure_dir / f"{plot_label}_IV_curve_{iv_stamp}.png" for figure_dir in etroc_figure_dirs(chip_name)]
 
                 row = {
                     "run_timestamp": iv_stamp,
@@ -1210,10 +1225,13 @@ def main() -> int:
             smu.close()
 
     if iv_sqlite_path is not None:
-        if iv_plot_path is not None:
+        if iv_plot_paths:
             plot_rows = load_iv_rows_sqlite(iv_sqlite_path, iv_stamp)
-            plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes, sweep=iv_plot_sweep)
-            print(f"Final IV plot: {iv_plot_path} (iv_plot_sweep={iv_plot_sweep})")
+            for iv_plot_path in iv_plot_paths:
+                plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes, sweep=iv_plot_sweep)
+            print(f"Final IV plots (iv_plot_sweep={iv_plot_sweep}):")
+            for iv_plot_path in iv_plot_paths:
+                print(f"  {iv_plot_path}")
         print(f"Final IV SQLite: {iv_sqlite_path}")
     else:
         print("No SMU was used; no IV SQLite or plot written.")

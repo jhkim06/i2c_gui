@@ -14,9 +14,23 @@ from tqdm import tqdm
 from i2c_rpi_helper import RPI_I2C_Helper 
 
 
-def etroc_figure_root() -> Path:
-    """Return ETROC plot root, overrideable for rclone/CERNBox mounts."""
-    return Path(os.environ.get("ETROC_FIGURE_ROOT", "../ETROC-figures"))
+REPO_DIR = Path(__file__).resolve().parents[1]
+LOCAL_ETROC_FIGURE_ROOT = REPO_DIR / "ETROC_figures"
+
+
+def etroc_figure_roots() -> list[Path]:
+    """Return plot roots: always local, plus ETROC_FIGURE_ROOT as a mirror."""
+    roots = [LOCAL_ETROC_FIGURE_ROOT]
+    env_root = os.environ.get("ETROC_FIGURE_ROOT")
+    if env_root:
+        env_path = Path(env_root).expanduser()
+        try:
+            is_duplicate = env_path.resolve() == LOCAL_ETROC_FIGURE_ROOT.resolve()
+        except OSError:
+            is_duplicate = env_path == LOCAL_ETROC_FIGURE_ROOT
+        if not is_duplicate:
+            roots.append(env_path)
+    return roots
 
 
 class i2c_connection():
@@ -692,10 +706,14 @@ class i2c_connection():
         with sqlite3.connect(sqlite_outfile) as sqlconn:
             acc_df.to_sql("acc_scurve", sqlconn, if_exists="append", index=False)
 
-        fig_outdir = etroc_figure_root() / (datetime.date.today().isoformat() + "_Array_Test_Results") / "ACCScurve"
-        fig_outdir.mkdir(exist_ok=True, parents=True)
-        self.make_acc_scurve_plots(acc_df, fig_outdir, timestamp, save_notes)
+        fig_outdirs = [root / (datetime.date.today().isoformat() + "_Array_Test_Results") / "ACCScurve" for root in etroc_figure_roots()]
+        for fig_outdir in fig_outdirs:
+            fig_outdir.mkdir(exist_ok=True, parents=True)
+            self.make_acc_scurve_plots(acc_df, fig_outdir, timestamp, save_notes)
         print(f"Saved ACC S-curve data to {sqlite_outfile}")
+        print("Saved ACC S-curve plots to:")
+        for fig_outdir in fig_outdirs:
+            print(f"  {fig_outdir}")
 
 
     def make_acc_scurve_plots(self, acc_df: pd.DataFrame, save_path, timestamp, note: str = ""):
@@ -931,9 +949,9 @@ class i2c_connection():
         save_mother_path.mkdir(exist_ok=True, parents=True)
         outfile = save_mother_path / 'BaselineHistory.sqlite'
 
-        fig_outdir = etroc_figure_root()
-        fig_outdir = fig_outdir / (datetime.date.today().isoformat() + '_Array_Test_Results')
-        fig_outdir.mkdir(exist_ok=True, parents=True)
+        fig_outdirs = [root / (datetime.date.today().isoformat() + '_Array_Test_Results') for root in etroc_figure_roots()]
+        for fig_outdir in fig_outdirs:
+            fig_outdir.mkdir(exist_ok=True, parents=True)
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -941,8 +959,11 @@ class i2c_connection():
             chip_name = self.chip_names[idx]
             safe_chip_name = ''.join(ch if ch.isalnum() or ch in {'-', '_'} else '_' for ch in chip_name.strip())
             safe_chip_name = '_'.join(part for part in safe_chip_name.split('_') if part) or 'chip'
-            chip_fig_outdir = fig_outdir / safe_chip_name
-            chip_fig_outdir.mkdir(exist_ok=True, parents=True)
+            chip_fig_outdirs = []
+            for fig_outdir in fig_outdirs:
+                chip_fig_outdir = fig_outdir / safe_chip_name
+                chip_fig_outdir.mkdir(exist_ok=True, parents=True)
+                chip_fig_outdirs.append(chip_fig_outdir)
 
 
             current_df = self.BL_df[chip_address]
@@ -953,11 +974,16 @@ class i2c_connection():
             with sqlite3.connect(outfile) as sqlconn:
                 current_df.to_sql('baselines', sqlconn, if_exists='append', index=False)
 
-            ## Make BL and NW 2D map
-            self.make_BL_NW_2D_maps(pivot_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+            for chip_fig_outdir in chip_fig_outdirs:
+                ## Make BL and NW 2D map
+                self.make_BL_NW_2D_maps(pivot_df, chip_name, save_notes, chip_fig_outdir, timestamp)
 
-            ## Make BL and NW 1D hist
-            self.make_BL_NW_1D_hists(current_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+                ## Make BL and NW 1D hist
+                self.make_BL_NW_1D_hists(current_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+
+            print(f"Saved baseline plots for {chip_name} to:")
+            for chip_fig_outdir in chip_fig_outdirs:
+                print(f"  {chip_fig_outdir}")
 
 
     #--------------------------------------------------------------------------#
