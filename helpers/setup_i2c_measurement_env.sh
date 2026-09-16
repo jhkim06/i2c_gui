@@ -6,7 +6,9 @@
 #
 # If executed directly, this script starts a new shell with the environment active.
 
-set -e
+# Do not use `set -e` here: this script is meant to be sourced, and leaking
+# errexit into an interactive shell can make normal bash completion failures
+# exit the shell and close SSH.
 
 HELPERS_DIR="$HOME/ETL/i2c_gui/helpers"
 VENV_DIR="${I2C_ETROC_VENV:-$HOME/i2c_etroc}"
