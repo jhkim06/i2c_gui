@@ -2,7 +2,7 @@
 """Draw IV curves from helpers/output/IVHistory.sqlite.
 
 Examples:
-  # Re-draw every stored IV measurement into ETROC_figures/IV
+  # Re-draw every stored IV measurement into ETROC-figures/by_hybrid_name
   python helpers/draw_iv_curve.py --all
 
   # Re-draw one run
@@ -18,6 +18,9 @@ Examples:
   # Draw grouped selections from a text file with columns: CHIP DATETIME LABEL
   # This writes one combined plot per label, e.g. FBK_IV_curves.png and HPK_IV_curves.png
   python helpers/draw_iv_curve.py --group-file iv_groups.txt
+
+  # Draw grouped selections with explicit legend labels from GROUP:LEGEND
+  python helpers/draw_iv_curve.py --group-file iv_curve_groups.txt --group-explicit-legends
 
 The script is intentionally separate from the SMU scan loop so old IV data can be
 re-plotted after removing obvious SMU/compliance overflow points.
@@ -38,23 +41,28 @@ IV_FIGURE_SIZE = (8, 6)
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB = Path(__file__).resolve().parent / "output" / "IVHistory.sqlite"
-LOCAL_ETROC_FIGURE_ROOT = REPO_DIR / "ETROC_figures"
-DEFAULT_OUTPUT_DIR = LOCAL_ETROC_FIGURE_ROOT / "IV"
+LOCAL_ETROC_FIGURE_ROOT = REPO_DIR / "ETROC-figures"
+CERNBOX_ETROC_FIGURE_ROOT = REPO_DIR.parent / "cernbox-www-plots" / "ETROC-figures"
+DEFAULT_OUTPUT_DIR = LOCAL_ETROC_FIGURE_ROOT / "by_hybrid_name"
 
 
 def mirror_output_paths(output: Path) -> list[Path]:
-    """Return optional ETROC_FIGURE_ROOT mirror path for a repo-local plot."""
+    """Return mirror paths for a repo-local ETROC plot."""
+    mirror_roots = [CERNBOX_ETROC_FIGURE_ROOT]
     env_root = os.environ.get("ETROC_FIGURE_ROOT")
-    if not env_root:
-        return []
-    env_path = Path(env_root).expanduser()
+    if env_root:
+        env_path = Path(env_root).expanduser()
+        try:
+            is_duplicate = any(env_path.resolve() == root.resolve() for root in [LOCAL_ETROC_FIGURE_ROOT, *mirror_roots])
+        except OSError:
+            is_duplicate = env_path in [LOCAL_ETROC_FIGURE_ROOT, *mirror_roots]
+        if not is_duplicate:
+            mirror_roots.append(env_path)
     try:
-        if env_path.resolve() == LOCAL_ETROC_FIGURE_ROOT.resolve():
-            return []
         relative = output.resolve().relative_to(LOCAL_ETROC_FIGURE_ROOT.resolve())
     except (OSError, ValueError):
         return []
-    return [env_path / relative]
+    return [root / relative for root in mirror_roots]
 
 
 def save_figure(fig: Any, output: Path, **kwargs: Any) -> list[Path]:
@@ -164,13 +172,17 @@ def parse_chip_datetime_selection(value: str) -> tuple[str, str]:
     return chip, datetime_value
 
 
-def parse_group_file(path: Path) -> dict[str, list[tuple[str, str]]]:
+def parse_group_file(path: Path, *, explicit_legends: bool = False) -> dict[str, list[tuple[str, str, str | None]]]:
     """Parse a whitespace-delimited selection file with lines: CHIP DATETIME LABEL.
 
     Blank lines and lines starting with # are ignored. Inline comments are also
     allowed after the three required columns.
+
+    With explicit_legends=True, LABEL may be written as GROUP:LEGEND. The GROUP
+    part chooses the combined plot/output name and title; the LEGEND part is used
+    exactly as that curve's legend label.
     """
-    groups: dict[str, list[tuple[str, str]]] = {}
+    groups: dict[str, list[tuple[str, str, str | None]]] = {}
     with path.open(encoding="utf-8") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             line = raw_line.split("#", 1)[0].strip()
@@ -188,7 +200,17 @@ def parse_group_file(path: Path) -> dict[str, list[tuple[str, str]]]:
                 raise ValueError(f"{path}:{line_number}: invalid datetime {datetime_value!r}: {exc}") from exc
             if not chip or not label:
                 raise ValueError(f"{path}:{line_number}: CHIP and LABEL must be non-empty")
-            groups.setdefault(label, []).append((chip, datetime_value))
+
+            legend_label: str | None = None
+            group_label = label
+            if explicit_legends and ":" in label:
+                group_label, legend_label = (part.strip() for part in label.split(":", 1))
+                if not group_label or not legend_label:
+                    raise ValueError(
+                        f"{path}:{line_number}: explicit legend label must be GROUP:LEGEND with both parts non-empty"
+                    )
+
+            groups.setdefault(group_label, []).append((chip, datetime_value, legend_label))
 
     if not groups:
         raise ValueError(f"No grouped IV selections found in {path}")
@@ -332,13 +354,23 @@ def legend_columns_for_entries(entry_count: int, *, max_rows: int = MAX_LEGEND_R
 
 def compact_curve_label(curve: dict[str, Any], duplicate_hybrids: set[str]) -> str:
     """Return a legend label short enough for fixed-size multi-curve plots."""
+    if curve.get("legend_label"):
+        return str(curve["legend_label"])
     hybrid = str(curve["hybrid"])
     if hybrid not in duplicate_hybrids:
         return hybrid
     return f"{hybrid} ({curve['run_timestamp']})"
 
 
-def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: str, *, sweep: str, title_label: str | None = None) -> None:
+def parse_matplotlib_fontsize(value: str) -> str | float:
+    """Return a matplotlib-compatible font size from CLI text."""
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: str, *, sweep: str, title_label: str | None = None, title_only_label: bool = False, legend_fontsize: str | float = "small") -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -361,12 +393,15 @@ def make_combined_plot(curves: list[dict[str, Any]], output: Path, current_col: 
 
     ax.set_xlabel("Bias Voltage (V)")
     ax.set_ylabel("Current (µA)")
-    title_prefix = f"{title_label} IV curves" if title_label else "IV curves"
-    ax.set_title(f"{title_prefix} — {len(curves)} runs\nIV sweep: {sweep}")
+    if title_only_label and title_label:
+        ax.set_title(title_label)
+    else:
+        title_prefix = f"{title_label} IV curves" if title_label else "IV curves"
+        ax.set_title(f"{title_prefix} — {len(curves)} runs\nIV sweep: {sweep}")
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
     legend = ax.legend(
-        fontsize="x-small",
+        fontsize=legend_fontsize,
         ncols=legend_columns_for_entries(len(curves)),
         loc="upper left",
         borderaxespad=0.5,
@@ -388,8 +423,9 @@ def safe_name(text: str) -> str:
 
 
 def default_output_path(output_dir: Path, run_timestamp: str, hybrid: str) -> Path:
-    """Build the standard IV-figure filename under ETROC_figures/IV."""
-    return output_dir / f"{safe_name(hybrid)}_IV_curve_{safe_name(run_timestamp)}.png"
+    """Build the standard IV-figure filename under by_hybrid_name/<hybrid>."""
+    safe_hybrid = safe_name(hybrid)
+    return output_dir / safe_hybrid / f"{safe_hybrid}_IV_curve_{safe_name(run_timestamp)}.png"
 
 
 def filter_rows(rows: list[sqlite3.Row], args: argparse.Namespace) -> tuple[list[sqlite3.Row], list[tuple[sqlite3.Row, str]]]:
@@ -427,7 +463,7 @@ def draw_selection(datetime_value: str, hybrid: str, args: argparse.Namespace, *
     return output, len(rows), kept, selected, dropped
 
 
-def collect_selection_for_combined_plot(datetime_value: str, hybrid: str, args: argparse.Namespace) -> dict[str, Any]:
+def collect_selection_for_combined_plot(datetime_value: str, hybrid: str, args: argparse.Namespace, *, legend_label: str | None = None) -> dict[str, Any]:
     """Fetch/filter one selected run for a combined plot."""
     rows = fetch_rows(args.db, datetime_value, hybrid, ignore_case=not args.case_sensitive)
     if not rows:
@@ -442,6 +478,7 @@ def collect_selection_for_combined_plot(datetime_value: str, hybrid: str, args: 
         "datetime": datetime_value,
         "hybrid": hybrid,
         "run_timestamp": selected[0]["run_timestamp"],
+        "legend_label": legend_label,
         "matched": len(rows),
         "kept": len(kept),
         "selected": len(selected),
@@ -450,20 +487,30 @@ def collect_selection_for_combined_plot(datetime_value: str, hybrid: str, args: 
     }
 
 
-def draw_combined_selection(selections: list[tuple[str, str]], args: argparse.Namespace, output: Path, *, title_label: str | None = None) -> tuple[Path, list[dict[str, Any]], list[tuple[str, str, str]]]:
+def draw_combined_selection(selections: list[tuple[str, str] | tuple[str, str, str | None]], args: argparse.Namespace, output: Path, *, title_label: str | None = None) -> tuple[Path, list[dict[str, Any]], list[tuple[str, str, str]]]:
     """Draw selected CHIP:DATETIME pairs together in one plot."""
     curves: list[dict[str, Any]] = []
     skipped: list[tuple[str, str, str]] = []
-    for hybrid, datetime_value in selections:
+    for selection in selections:
+        hybrid, datetime_value = selection[:2]
+        legend_label = selection[2] if len(selection) > 2 else None
         try:
-            curves.append(collect_selection_for_combined_plot(datetime_value, hybrid, args))
+            curves.append(collect_selection_for_combined_plot(datetime_value, hybrid, args, legend_label=legend_label))
         except Exception as exc:
             skipped.append((datetime_value, hybrid, str(exc)))
 
     if not curves:
         raise RuntimeError("No selected IV curves could be drawn")
 
-    make_combined_plot(curves, output, args.current_column, sweep=args.iv_plot_sweep, title_label=title_label)
+    make_combined_plot(
+        curves,
+        output,
+        args.current_column,
+        sweep=args.iv_plot_sweep,
+        title_label=title_label,
+        title_only_label=args.group_explicit_legends and title_label is not None,
+        legend_fontsize=parse_matplotlib_fontsize(args.legend_fontsize),
+    )
     return output, curves, skipped
 
 
@@ -473,12 +520,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--all", action="store_true", help=f"Re-draw every IV run into --output-dir (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--list", nargs="+", type=parse_chip_datetime_selection, metavar="CHIP:DATETIME", help="Re-draw selected chip/date pairs, e.g. --list W03_100:20260811_221126 W03_72:20260811_221122")
     parser.add_argument("--group-file", type=Path, help="Text file with whitespace-separated columns: CHIP DATETIME LABEL. Writes one combined IV plot per LABEL, e.g. FBK and HPK.")
+    parser.add_argument("--group-explicit-legends", action="store_true", help="With --group-file, interpret LABEL as GROUP:LEGEND. GROUP is used for the plot title/output name; LEGEND is used as that curve's legend text, e.g. W03_87:Before.")
+    parser.add_argument("--legend-fontsize", default="small", help="Matplotlib legend font size for combined plots (default: small). Examples: medium, large, 12.")
     parser.add_argument("--one-plot", "--combined", dest="one_plot", action="store_true", help="With --list, draw all selected IV curves together in one output plot")
     parser.add_argument("--datetime", help="Run datetime/prefix, e.g. 20260625_212514 or '2026-06-25 21:25'")
     parser.add_argument("--hybrid", "--chip", dest="hybrid", help="Hybrid/chip name stored in chip_name")
     parser.add_argument("--current-column", default="before_current_A", choices=["before_current_A", "after_current_A"], help="Current column to plot")
     parser.add_argument("--iv-plot-sweep", "--iv-sweep", dest="iv_plot_sweep", default="up", choices=["up", "down", "both"], help="Which sweep to draw in the IV plot: up, down, or both. Default: up. --iv-sweep is kept as a deprecated alias.")
-    parser.add_argument("--output", type=Path, default=None, help="Output PNG path for a single run. Default: ETROC_figures/IV/<hybrid>_IV_curve_<datetime>.png")
+    parser.add_argument("--output", type=Path, default=None, help="Output PNG path for a single run. Default: ETROC-figures/by_hybrid_name/<hybrid>/<hybrid>_IV_curve_<datetime>.png")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help=f"Directory for --all outputs (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--case-sensitive", action="store_true", help="Require exact case match for hybrid/chip name")
 
@@ -544,14 +593,15 @@ def main() -> int:
 
         args.output_dir.mkdir(parents=True, exist_ok=True)
         try:
-            groups = parse_group_file(args.group_file)
+            groups = parse_group_file(args.group_file, explicit_legends=args.group_explicit_legends)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
 
         written = 0
         all_skipped: list[tuple[str, str, str, str]] = []
         for label, selections in groups.items():
-            output = args.output_dir / f"{safe_name(label)}_IV_curves.png"
+            safe_label = safe_name(label)
+            output = args.output_dir / safe_label / f"{safe_label}_IV_curves.png"
             try:
                 output, curves, skipped = draw_combined_selection(selections, args, output, title_label=label)
             except Exception as exc:

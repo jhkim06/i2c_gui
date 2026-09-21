@@ -14,14 +14,18 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import re
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+REPO_DIR = Path(__file__).resolve().parents[1]
+LOCAL_ETROC_FIGURE_ROOT = REPO_DIR / "ETROC-figures"
+CERNBOX_ETROC_FIGURE_ROOT = REPO_DIR.parent / "cernbox-www-plots" / "ETROC-figures"
 DEFAULT_DB = Path("/home/ellie/ETL/i2c_gui/helpers/output/IVHistory_knumtd.sqlite")
-DEFAULT_OUTPUT_DIR = Path("/home/ellie/ETL/i2c_gui/helpers/output/iv_history_plots")
+DEFAULT_OUTPUT_DIR = LOCAL_ETROC_FIGURE_ROOT / "by_hybrid_name"
 
 
 def safe_filename_part(text: str) -> str:
@@ -29,6 +33,33 @@ def safe_filename_part(text: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.+-]+", "_", str(text).strip())
     cleaned = cleaned.strip("._")
     return cleaned or "unknown"
+
+
+def mirror_output_paths(output: Path) -> list[Path]:
+    """Return mirror paths for a repo-local ETROC plot."""
+    mirror_roots = [CERNBOX_ETROC_FIGURE_ROOT]
+    env_root = os.environ.get("ETROC_FIGURE_ROOT")
+    if env_root:
+        env_path = Path(env_root).expanduser()
+        try:
+            is_duplicate = any(env_path.resolve() == root.resolve() for root in [LOCAL_ETROC_FIGURE_ROOT, *mirror_roots])
+        except OSError:
+            is_duplicate = env_path in [LOCAL_ETROC_FIGURE_ROOT, *mirror_roots]
+        if not is_duplicate:
+            mirror_roots.append(env_path)
+    try:
+        relative = output.resolve().relative_to(LOCAL_ETROC_FIGURE_ROOT.resolve())
+    except (OSError, ValueError):
+        return []
+    return [root / relative for root in mirror_roots]
+
+
+def save_figure(fig: Any, output: Path, **kwargs: Any) -> list[Path]:
+    paths = [output, *mirror_output_paths(output)]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, **kwargs)
+    return paths
 
 
 def parse_date(value: str | None, *, option_name: str) -> dt.date | None:
@@ -121,8 +152,7 @@ def plot_iv_curve(
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.set_axisbelow(True)
     fig.tight_layout()
-    plot_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(plot_path, dpi=150)
+    save_figure(fig, plot_path, dpi=150)
     plt.close(fig)
     return True
 
@@ -231,8 +261,9 @@ def main() -> int:
     made = 0
     for run_timestamp, run_rows in matching:
         chip_name, _ = run_label(run_rows)
-        filename = f"{safe_filename_part(chip_name)}_{run_timestamp}_IV_curve_{args.sweep}.png"
-        plot_path = args.output_dir / filename
+        safe_chip_name = safe_filename_part(chip_name)
+        filename = f"{safe_chip_name}_{run_timestamp}_IV_curve_{args.sweep}.png"
+        plot_path = args.output_dir / safe_chip_name / filename
         if plot_iv_curve(
             run_rows,
             plot_path,

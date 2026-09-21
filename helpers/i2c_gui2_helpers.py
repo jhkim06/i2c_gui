@@ -15,19 +15,20 @@ from i2c_rpi_helper import RPI_I2C_Helper
 
 
 REPO_DIR = Path(__file__).resolve().parents[1]
-LOCAL_ETROC_FIGURE_ROOT = REPO_DIR / "ETROC_figures"
+LOCAL_ETROC_FIGURE_ROOT = REPO_DIR / "ETROC-figures"
+CERNBOX_ETROC_FIGURE_ROOT = REPO_DIR.parent / "cernbox-www-plots" / "ETROC-figures"
 
 
 def etroc_figure_roots() -> list[Path]:
-    """Return plot roots: always local, plus ETROC_FIGURE_ROOT as a mirror."""
-    roots = [LOCAL_ETROC_FIGURE_ROOT]
+    """Return plot roots: local, CERNBox mirror, plus ETROC_FIGURE_ROOT if set."""
+    roots = [LOCAL_ETROC_FIGURE_ROOT, CERNBOX_ETROC_FIGURE_ROOT]
     env_root = os.environ.get("ETROC_FIGURE_ROOT")
     if env_root:
         env_path = Path(env_root).expanduser()
         try:
-            is_duplicate = env_path.resolve() == LOCAL_ETROC_FIGURE_ROOT.resolve()
+            is_duplicate = any(env_path.resolve() == root.resolve() for root in roots)
         except OSError:
-            is_duplicate = env_path == LOCAL_ETROC_FIGURE_ROOT
+            is_duplicate = env_path in roots
         if not is_duplicate:
             roots.append(env_path)
     return roots
@@ -706,7 +707,7 @@ class i2c_connection():
         with sqlite3.connect(sqlite_outfile) as sqlconn:
             acc_df.to_sql("acc_scurve", sqlconn, if_exists="append", index=False)
 
-        fig_outdirs = [root / (datetime.date.today().isoformat() + "_Array_Test_Results") / "ACCScurve" for root in etroc_figure_roots()]
+        fig_outdirs = [root / "by_hybrid_name" / "ACCScurve" for root in etroc_figure_roots()]
         for fig_outdir in fig_outdirs:
             fig_outdir.mkdir(exist_ok=True, parents=True)
             self.make_acc_scurve_plots(acc_df, fig_outdir, timestamp, save_notes)
@@ -949,7 +950,7 @@ class i2c_connection():
         save_mother_path.mkdir(exist_ok=True, parents=True)
         outfile = save_mother_path / 'BaselineHistory.sqlite'
 
-        fig_outdirs = [root / (datetime.date.today().isoformat() + '_Array_Test_Results') for root in etroc_figure_roots()]
+        fig_outdirs = [root / "by_hybrid_name" for root in etroc_figure_roots()]
         for fig_outdir in fig_outdirs:
             fig_outdir.mkdir(exist_ok=True, parents=True)
 

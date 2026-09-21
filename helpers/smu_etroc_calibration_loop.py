@@ -108,7 +108,8 @@ from smu_keithley_2400 import connect_keithley_2400
 
 HELPERS_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = HELPERS_DIR / "output"
-LOCAL_ETROC_FIGURE_ROOT = HELPERS_DIR.parent / "ETROC_figures"
+LOCAL_ETROC_FIGURE_ROOT = HELPERS_DIR.parent / "ETROC-figures"
+CERNBOX_ETROC_FIGURE_ROOT = HELPERS_DIR.parents[1] / "cernbox-www-plots" / "ETROC-figures"
 DEFAULT_I2C_SCRIPT = HELPERS_DIR / "i2c_test_with_rpi.py"
 DEFAULT_CURRENT_LIMIT = 100e-6
 DEFAULT_SETTLE = 1.0
@@ -584,23 +585,23 @@ def safe_filename_part(value: str) -> str:
 
 
 def etroc_figure_roots() -> list[Path]:
-    """Return plot roots: always local, plus ETROC_FIGURE_ROOT as a mirror."""
-    roots = [LOCAL_ETROC_FIGURE_ROOT]
+    """Return plot roots: local, CERNBox mirror, plus ETROC_FIGURE_ROOT if set."""
+    roots = [LOCAL_ETROC_FIGURE_ROOT, CERNBOX_ETROC_FIGURE_ROOT]
     env_root = os.environ.get("ETROC_FIGURE_ROOT")
     if env_root:
         env_path = Path(env_root).expanduser()
         try:
-            is_duplicate = env_path.resolve() == LOCAL_ETROC_FIGURE_ROOT.resolve()
+            is_duplicate = any(env_path.resolve() == root.resolve() for root in roots)
         except OSError:
-            is_duplicate = env_path == LOCAL_ETROC_FIGURE_ROOT
+            is_duplicate = env_path in roots
         if not is_duplicate:
             roots.append(env_path)
     return roots
 
 
 def etroc_figure_dirs(chip_name: str | None = None) -> list[Path]:
-    """Return dated figure directories used by save_baselines()."""
-    fig_dirs = [root / f"{dt.date.today().isoformat()}_Array_Test_Results" for root in etroc_figure_roots()]
+    """Return by-hybrid figure directories for local and mirrored plots."""
+    fig_dirs = [root / "by_hybrid_name" for root in etroc_figure_roots()]
     if chip_name:
         fig_dirs = [fig_dir / safe_filename_part(chip_name) for fig_dir in fig_dirs]
     return fig_dirs

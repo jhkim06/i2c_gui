@@ -12,6 +12,7 @@
 
 HELPERS_DIR="$HOME/ETL/i2c_gui/helpers"
 VENV_DIR="${I2C_ETROC_VENV:-$HOME/i2c_etroc}"
+LOCAL_FIGURE_ROOT="$HOME/ETL/i2c_gui/ETROC-figures"
 FIGURE_ROOT="${ETROC_FIGURE_ROOT:-$HOME/ETL/cernbox-www-plots/ETROC-figures}"
 
 if [ ! -d "$HELPERS_DIR" ]; then
@@ -28,12 +29,14 @@ fi
 # shellcheck source=/dev/null
 source "$VENV_DIR/bin/activate"
 export ETROC_FIGURE_ROOT="$FIGURE_ROOT"
+mkdir -p "$LOCAL_FIGURE_ROOT/by_hybrid_name" "$ETROC_FIGURE_ROOT/by_hybrid_name"
 cd "$HELPERS_DIR"
 
 echo "i2c measurement environment ready"
-echo "  venv:        $VENV_DIR"
-echo "  figures:     $ETROC_FIGURE_ROOT"
-echo "  working dir: $PWD"
+echo "  venv:          $VENV_DIR"
+echo "  local figures: $LOCAL_FIGURE_ROOT/by_hybrid_name"
+echo "  web figures:   $ETROC_FIGURE_ROOT/by_hybrid_name"
+echo "  working dir:   $PWD"
 
 # If the script was executed instead of sourced, keep the configured environment
 # alive in a child interactive shell.
