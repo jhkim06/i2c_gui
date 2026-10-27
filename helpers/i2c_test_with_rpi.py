@@ -1,7 +1,10 @@
 import argparse
 import i2c_gui2_helpers as helpers
 import datetime
+import os
 from pathlib import Path
+import subprocess
+import sys
 import numpy as np
 from tqdm import tqdm
 
@@ -13,6 +16,12 @@ parser = argparse.ArgumentParser(description="ETROC calibration script")
 
 parser.add_argument("--chip_name", type=str, default="test", help="Name of the chip")
 parser.add_argument("--save_notes", type=str, default="", help="Extra notes for saving")
+parser.add_argument(
+    "--show_plots",
+    action="store_true",
+    help="Open the saved baseline/noise-width map in a separate window without pausing calibration",
+)
+parser.add_argument("--_preview_png", type=Path, help=argparse.SUPPRESS)
 parser.add_argument(
     "--acc_scurve_pixels",
     type=str,
@@ -29,6 +38,16 @@ parser.add_argument(
     help="Pixel power mode used when disabling/configuring pixels before auto-calibration. Use 'low' to keep ETROC in low power mode.",
 )
 args = parser.parse_args()
+
+if args._preview_png is not None:
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(16, 8))
+    ax.imshow(plt.imread(args._preview_png))
+    ax.axis("off")
+    fig.tight_layout()
+    plt.show()
+    raise SystemExit(0)
 
 
 def parse_pixel_list(pixel_string):
@@ -80,7 +99,7 @@ now = datetime.datetime.now().isoformat(sep=' ', timespec='seconds')
 full_notes = f"{args.save_notes}" if args.save_notes else now
 
 output_dir = Path(__file__).resolve().parent / "output"
-i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes)
+preview_paths = i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes, preview_plots=args.show_plots)
 
 acc_scurve_pixels = parse_pixel_list(args.acc_scurve_pixels)
 if acc_scurve_pixels:
@@ -96,3 +115,17 @@ if acc_scurve_pixels:
         hist_dir=output_dir,
         save_notes=full_notes,
     )
+
+if args.show_plots:
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        for preview_path in preview_paths:
+            subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), "--_preview_png", str(preview_path)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            print(f"Opening baseline/noise-width preview: {preview_path}")
+    else:
+        print("No graphical display is available; saved baseline/noise-width plots without opening a window.")

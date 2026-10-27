@@ -902,7 +902,9 @@ class i2c_connection():
                 ax1.text(col,row, nw_value, c=nw_text_color, size=11, rotation=45, fontweight="bold", ha="center", va="center")
 
         plt.tight_layout()
-        fig.savefig(save_path / f'{given_chip_name}_BL_NW_2D_map_{timestamp}.png')
+        plot_path = save_path / f'{given_chip_name}_BL_NW_2D_map_{timestamp}.png'
+        fig.savefig(plot_path)
+        return plot_path
 
 
     def make_BL_NW_1D_hists(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp):
@@ -942,6 +944,7 @@ class i2c_connection():
             self,
             hist_dir: str = "../ETROC-History",
             save_notes: str = "",
+            preview_plots: bool = False,
         ):
 
         import sqlite3
@@ -955,6 +958,7 @@ class i2c_connection():
             fig_outdir.mkdir(exist_ok=True, parents=True)
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        preview_paths = []
 
         for idx, chip_address in enumerate(self.chip_addresses):
             chip_name = self.chip_names[idx]
@@ -975,9 +979,11 @@ class i2c_connection():
             with sqlite3.connect(outfile) as sqlconn:
                 current_df.to_sql('baselines', sqlconn, if_exists='append', index=False)
 
-            for chip_fig_outdir in chip_fig_outdirs:
+            for fig_index, chip_fig_outdir in enumerate(chip_fig_outdirs):
                 ## Make BL and NW 2D map
-                self.make_BL_NW_2D_maps(pivot_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+                map_path = self.make_BL_NW_2D_maps(pivot_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+                if preview_plots and fig_index == 0:
+                    preview_paths.append(map_path)
 
                 ## Make BL and NW 1D hist
                 self.make_BL_NW_1D_hists(current_df, chip_name, save_notes, chip_fig_outdir, timestamp)
@@ -985,6 +991,9 @@ class i2c_connection():
             print(f"Saved baseline plots for {chip_name} to:")
             for chip_fig_outdir in chip_fig_outdirs:
                 print(f"  {chip_fig_outdir}")
+
+        if preview_plots:
+            return preview_paths
 
 
     #--------------------------------------------------------------------------#
