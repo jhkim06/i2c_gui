@@ -3,8 +3,10 @@ import logging
 import datetime
 import fcntl
 import os
+import threading
 import time
 import sys
+from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
@@ -47,6 +49,27 @@ def log_unsynced_plot(plot_path: Path, output_dir: Path) -> None:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         with pending_path.open("a", encoding="utf-8") as pending_file:
             pending_file.write(f"{relative_path.as_posix()}\n")
+
+
+@contextmanager
+def saving_bl_nw_map():
+    stop = threading.Event()
+
+    def animate():
+        dot_count = 1
+        while not stop.is_set():
+            print(f"\rSaving BL/NW map{'.' * dot_count:<3}", end="", flush=True)
+            dot_count = dot_count % 3 + 1
+            stop.wait(0.4)
+
+    animation = threading.Thread(target=animate, daemon=True)
+    animation.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        animation.join()
+        print("\r" + " " * len("Saving BL/NW map...") + "\r", end="", flush=True)
 
 
 class i2c_connection():
@@ -909,20 +932,22 @@ class i2c_connection():
 
         bl_threshold = 0.55 * (input_df.baseline.values.max() - input_df.baseline.values.min()) + input_df.baseline.values.min()
 
-        for col in range(16):
-            for row in range(16):
+        with saving_bl_nw_map():
+            for col in range(16):
+                for row in range(16):
 
-                bl_value = int(input_df.baseline[col][row])
-                nw_value = int(input_df.noise_width[col][row])
-                bl_text_color = 'black' if bl_value > bl_threshold else 'white'
-                nw_text_color = 'black' if nw_value > 9 else 'white'
+                    bl_value = int(input_df.baseline[col][row])
+                    nw_value = int(input_df.noise_width[col][row])
+                    bl_text_color = 'black' if bl_value > bl_threshold else 'white'
+                    nw_text_color = 'black' if nw_value > 9 else 'white'
 
-                ax0.text(col,row, bl_value, c=bl_text_color, size=10, rotation=45, fontweight="bold", ha="center", va="center")
-                ax1.text(col,row, nw_value, c=nw_text_color, size=11, rotation=45, fontweight="bold", ha="center", va="center")
+                    ax0.text(col,row, bl_value, c=bl_text_color, size=10, rotation=45, fontweight="bold", ha="center", va="center")
+                    ax1.text(col,row, nw_value, c=nw_text_color, size=11, rotation=45, fontweight="bold", ha="center", va="center")
 
-        plt.tight_layout()
-        plot_path = save_path / f'{given_chip_name}_BL_NW_2D_map_{timestamp}.png'
-        fig.savefig(plot_path)
+            plt.tight_layout()
+            plot_path = save_path / f'{given_chip_name}_BL_NW_2D_map_{timestamp}.png'
+            fig.savefig(plot_path)
+        print(f"Saved BL/NW map: {plot_path}", flush=True)
         return plot_path
 
 
