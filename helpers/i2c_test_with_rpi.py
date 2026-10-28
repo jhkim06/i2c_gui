@@ -49,6 +49,11 @@ if args._preview_png is not None:
     plt.show()
     raise SystemExit(0)
 
+try:
+    _, output_dir, _ = helpers.measurement_output_paths()
+except ValueError as exc:
+    parser.error(str(exc))
+
 
 def parse_pixel_list(pixel_string):
     if not pixel_string:
@@ -98,7 +103,6 @@ i2c_conn.config_chips(
 now = datetime.datetime.now().isoformat(sep=' ', timespec='seconds')
 full_notes = f"{args.save_notes}" if args.save_notes else now
 
-output_dir = Path(__file__).resolve().parent / "output"
 preview_paths = i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes, preview_plots=args.show_plots)
 
 acc_scurve_pixels = parse_pixel_list(args.acc_scurve_pixels)

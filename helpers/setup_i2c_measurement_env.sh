@@ -12,7 +12,8 @@
 
 HELPERS_DIR="$HOME/ETL/i2c_gui/helpers"
 VENV_DIR="${I2C_ETROC_VENV:-$HOME/i2c_etroc}"
-LOCAL_FIGURE_ROOT="$HOME/ETL/i2c_gui/ETROC-figures"
+LOCAL_FIGURE_ROOT="${ETROC_LOCAL_FIGURE_ROOT:-$HOME/ETL/i2c_gui/ETROC-figures}"
+OUTPUT_DIR="${ETROC_SQLITE_OUTPUT_DIR:-$HOME/ETL/i2c_gui/helpers/output}"
 FIGURE_ROOT="${ETROC_FIGURE_ROOT:-$HOME/ETL/cernbox-www-plots/ETROC-figures}"
 
 if [ ! -d "$HELPERS_DIR" ]; then
@@ -28,14 +29,21 @@ fi
 
 # shellcheck source=/dev/null
 source "$VENV_DIR/bin/activate"
+export ETROC_LOCAL_FIGURE_ROOT="$LOCAL_FIGURE_ROOT"
+export ETROC_SQLITE_OUTPUT_DIR="$OUTPUT_DIR"
 export ETROC_FIGURE_ROOT="$FIGURE_ROOT"
-mkdir -p "$LOCAL_FIGURE_ROOT/by_hybrid_name" "$ETROC_FIGURE_ROOT/by_hybrid_name"
-cd "$HELPERS_DIR"
+if ! mkdir -p "$ETROC_LOCAL_FIGURE_ROOT/by_hybrid_name" "$ETROC_SQLITE_OUTPUT_DIR"; then
+  echo "ERROR: could not create local figure or SQLite output directory" >&2
+  return 1 2>/dev/null || exit 1
+fi
+cd "$HELPERS_DIR" || return 1 2>/dev/null || exit 1
 
 echo "i2c measurement environment ready"
 echo "  venv:          $VENV_DIR"
-echo "  local figures: $LOCAL_FIGURE_ROOT/by_hybrid_name"
-echo "  web figures:   $ETROC_FIGURE_ROOT/by_hybrid_name"
+echo "  local figures: $ETROC_LOCAL_FIGURE_ROOT/by_hybrid_name"
+echo "  SQLite/logs:   $ETROC_SQLITE_OUTPUT_DIR"
+echo "  pending plots: $ETROC_SQLITE_OUTPUT_DIR/pending_cernbox_plots.txt"
+echo "  sync target:   $ETROC_FIGURE_ROOT/by_hybrid_name"
 echo "  working dir:   $PWD"
 
 # If the script was executed instead of sourced, keep the configured environment

@@ -104,12 +104,10 @@ from smu_keithley import DEFAULT_DEVICE as KEITHLEY_DEFAULT_DEVICE
 from smu_keithley import connect_keithley
 from smu_keithley_2400 import DEFAULT_DEVICE as KEITHLEY_2400_DEFAULT_DEVICE
 from smu_keithley_2400 import connect_keithley_2400
+from i2c_gui2_helpers import log_unsynced_plot, measurement_output_paths
 
 
 HELPERS_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIR = HELPERS_DIR / "output"
-LOCAL_ETROC_FIGURE_ROOT = HELPERS_DIR.parent / "ETROC-figures"
-CERNBOX_ETROC_FIGURE_ROOT = HELPERS_DIR.parents[1] / "cernbox-www-plots" / "ETROC-figures"
 DEFAULT_I2C_SCRIPT = HELPERS_DIR / "i2c_test_with_rpi.py"
 DEFAULT_CURRENT_LIMIT = 100e-6
 DEFAULT_SETTLE = 1.0
@@ -376,6 +374,7 @@ def run_calibration(
     chip_name: str,
     save_notes: str,
     log_path: Path | None,
+    output_dir: Path,
     timeout_s: float | None,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [
@@ -403,6 +402,7 @@ def run_calibration(
     proc = subprocess.Popen(
         cmd,
         cwd=str(i2c_script.parent),
+        env={**os.environ, "ETROC_SQLITE_OUTPUT_DIR": str(output_dir)},
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=0,
@@ -585,22 +585,13 @@ def safe_filename_part(value: str) -> str:
 
 
 def etroc_figure_roots() -> list[Path]:
-    """Return plot roots: local, CERNBox mirror, plus ETROC_FIGURE_ROOT if set."""
-    roots = [LOCAL_ETROC_FIGURE_ROOT, CERNBOX_ETROC_FIGURE_ROOT]
-    env_root = os.environ.get("ETROC_FIGURE_ROOT")
-    if env_root:
-        env_path = Path(env_root).expanduser()
-        try:
-            is_duplicate = any(env_path.resolve() == root.resolve() for root in roots)
-        except OSError:
-            is_duplicate = env_path in roots
-        if not is_duplicate:
-            roots.append(env_path)
-    return roots
+    """Return only the local figure root; CERNBox is a later sync target."""
+    local_root, _, _ = measurement_output_paths()
+    return [local_root]
 
 
 def etroc_figure_dirs(chip_name: str | None = None) -> list[Path]:
-    """Return by-hybrid figure directories for local and mirrored plots."""
+    """Return the local by-hybrid figure directory."""
     fig_dirs = [root / "by_hybrid_name" for root in etroc_figure_roots()]
     if chip_name:
         fig_dirs = [fig_dir / safe_filename_part(chip_name) for fig_dir in fig_dirs]
@@ -739,7 +730,7 @@ def plot_iv_curve(
     chip_name: str,
     save_notes: str,
     sweep: str = "up",
-) -> None:
+) -> Path | None:
     """Draw an IV curve from pre-calibration SMU current readings."""
     import matplotlib
 
@@ -775,6 +766,7 @@ def plot_iv_curve(
     plot_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
+    return plot_path
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -823,6 +815,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
+    try:
+        _, configured_output_dir, _ = measurement_output_paths()
+    except ValueError as exc:
+        parser.error(str(exc))
     config = load_json_config(args.config)
 
     smu_driver_raw = str(cfg_value(config, "smu_driver", args.smu_driver, "keithley"))
@@ -840,7 +836,7 @@ def main() -> int:
     chip_name = str(cfg_value(config, "chip_name", args.chip_name, DEFAULT_CHIP_NAME))
     save_notes = str(cfg_value(config, "save_notes", args.save_notes, ""))
     i2c_script = Path(cfg_value(config, "i2c_script", args.i2c_script, DEFAULT_I2C_SCRIPT))
-    output_dir = Path(cfg_value(config, "output_dir", args.output_dir, DEFAULT_OUTPUT_DIR))
+    output_dir = Path(cfg_value(config, "output_dir", args.output_dir, configured_output_dir)).expanduser().resolve()
     calibration_timeout = cfg_value(config, "calibration_timeout", args.calibration_timeout, None)
     if calibration_timeout is not None:
         calibration_timeout = float(calibration_timeout)
@@ -1096,6 +1092,7 @@ def main() -> int:
                         chip_name=chip_name,
                         save_notes=step_notes,
                         log_path=log_path,
+                        output_dir=output_dir,
                         timeout_s=calibration_timeout,
                     )
                     calibration_returncode: int | str = proc.returncode
@@ -1229,7 +1226,9 @@ def main() -> int:
         if iv_plot_paths:
             plot_rows = load_iv_rows_sqlite(iv_sqlite_path, iv_stamp)
             for iv_plot_path in iv_plot_paths:
-                plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes, sweep=iv_plot_sweep)
+                saved_plot_path = plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes, sweep=iv_plot_sweep)
+                if saved_plot_path is not None:
+                    log_unsynced_plot(saved_plot_path, output_dir)
             print(f"Final IV plots (iv_plot_sweep={iv_plot_sweep}):")
             for iv_plot_path in iv_plot_paths:
                 print(f"  {iv_plot_path}")

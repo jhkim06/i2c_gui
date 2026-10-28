@@ -1,6 +1,7 @@
 import i2c_gui2
 import logging
 import datetime
+import fcntl
 import os
 import time
 import sys
@@ -14,24 +15,38 @@ from tqdm import tqdm
 from i2c_rpi_helper import RPI_I2C_Helper 
 
 
-REPO_DIR = Path(__file__).resolve().parents[1]
-LOCAL_ETROC_FIGURE_ROOT = REPO_DIR / "ETROC-figures"
-CERNBOX_ETROC_FIGURE_ROOT = REPO_DIR.parent / "cernbox-www-plots" / "ETROC-figures"
+def measurement_output_paths() -> tuple[Path, Path, Path]:
+    names = ("ETROC_LOCAL_FIGURE_ROOT", "ETROC_SQLITE_OUTPUT_DIR", "ETROC_FIGURE_ROOT")
+    missing = [name for name in names if not os.environ.get(name)]
+    if missing:
+        raise ValueError(
+            f"Missing measurement environment variable(s): {', '.join(missing)}. "
+            "Run: source ~/ETL/i2c_gui/helpers/setup_i2c_measurement_env.sh"
+        )
+
+    paths = tuple(Path(os.environ[name]).expanduser() for name in names)
+    if any(not path.is_absolute() for path in paths):
+        raise ValueError("Measurement output directories must be absolute paths")
+    if paths[0] == paths[2]:
+        raise ValueError("ETROC_LOCAL_FIGURE_ROOT and ETROC_FIGURE_ROOT must differ")
+    return paths
 
 
 def etroc_figure_roots() -> list[Path]:
-    """Return plot roots: local, CERNBox mirror, plus ETROC_FIGURE_ROOT if set."""
-    roots = [LOCAL_ETROC_FIGURE_ROOT, CERNBOX_ETROC_FIGURE_ROOT]
-    env_root = os.environ.get("ETROC_FIGURE_ROOT")
-    if env_root:
-        env_path = Path(env_root).expanduser()
-        try:
-            is_duplicate = any(env_path.resolve() == root.resolve() for root in roots)
-        except OSError:
-            is_duplicate = env_path in roots
-        if not is_duplicate:
-            roots.append(env_path)
-    return roots
+    """Return only the local figure root; CERNBox is a later sync target."""
+    local_root, _, _ = measurement_output_paths()
+    return [local_root]
+
+
+def log_unsynced_plot(plot_path: Path, output_dir: Path) -> None:
+    local_root, _, _ = measurement_output_paths()
+    relative_path = plot_path.relative_to(local_root)
+    output_dir.mkdir(exist_ok=True, parents=True)
+    pending_path = output_dir / "pending_cernbox_plots.txt"
+    with (output_dir / "pending_cernbox_plots.txt.lock").open("a") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        with pending_path.open("a", encoding="utf-8") as pending_file:
+            pending_file.write(f"{relative_path.as_posix()}\n")
 
 
 class i2c_connection():
@@ -689,14 +704,15 @@ class i2c_connection():
         return pd.concat(out, ignore_index=True)
 
 
-    def save_acc_scurves(self, acc_df: pd.DataFrame, hist_dir: str = "../ETROC-History", save_notes: str = ""):
+    def save_acc_scurves(self, acc_df: pd.DataFrame, hist_dir: str | Path | None = None, save_notes: str = ""):
         import sqlite3
 
         if acc_df.empty:
             print("No ACC S-curve data to save")
             return
 
-        save_mother_path = Path(hist_dir)
+        _, configured_output_dir, _ = measurement_output_paths()
+        save_mother_path = Path(hist_dir) if hist_dir is not None else configured_output_dir
         save_mother_path.mkdir(exist_ok=True, parents=True)
         sqlite_outfile = save_mother_path / "ACCScurveHistory.sqlite"
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -710,7 +726,8 @@ class i2c_connection():
         fig_outdirs = [root / "by_hybrid_name" / "ACCScurve" for root in etroc_figure_roots()]
         for fig_outdir in fig_outdirs:
             fig_outdir.mkdir(exist_ok=True, parents=True)
-            self.make_acc_scurve_plots(acc_df, fig_outdir, timestamp, save_notes)
+            plot_path = self.make_acc_scurve_plots(acc_df, fig_outdir, timestamp, save_notes)
+            log_unsynced_plot(plot_path, save_mother_path)
         print(f"Saved ACC S-curve data to {sqlite_outfile}")
         print("Saved ACC S-curve plots to:")
         for fig_outdir in fig_outdirs:
@@ -779,8 +796,10 @@ class i2c_connection():
         if note:
             fig.suptitle(f"ACC S-curve scan {note}", fontsize=13, y=0.995)
         fig.tight_layout(rect=[0, 0, 1, 0.97] if note else None)
-        fig.savefig(save_path / f"ACC_Scurve_{timestamp}.png", bbox_inches="tight")
+        plot_path = save_path / f"ACC_Scurve_{timestamp}.png"
+        fig.savefig(plot_path, bbox_inches="tight")
         plt.close(fig)
+        return plot_path
 
     #--------------------------------------------------------------------------#
     # Function 7
@@ -936,20 +955,23 @@ class i2c_connection():
         axes[1].legend()
 
         plt.tight_layout()
-        fig.savefig(save_path / f'{given_chip_name}_BL_NW_1D_hist_{timestamp}.png')
+        plot_path = save_path / f'{given_chip_name}_BL_NW_1D_hist_{timestamp}.png'
+        fig.savefig(plot_path)
+        return plot_path
 
 
     #--------------------------------------------------------------------------#
     def save_baselines(
             self,
-            hist_dir: str = "../ETROC-History",
+            hist_dir: str | Path | None = None,
             save_notes: str = "",
             preview_plots: bool = False,
         ):
 
         import sqlite3
 
-        save_mother_path = Path(hist_dir)
+        _, configured_output_dir, _ = measurement_output_paths()
+        save_mother_path = Path(hist_dir) if hist_dir is not None else configured_output_dir
         save_mother_path.mkdir(exist_ok=True, parents=True)
         outfile = save_mother_path / 'BaselineHistory.sqlite'
 
@@ -982,11 +1004,13 @@ class i2c_connection():
             for fig_index, chip_fig_outdir in enumerate(chip_fig_outdirs):
                 ## Make BL and NW 2D map
                 map_path = self.make_BL_NW_2D_maps(pivot_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+                log_unsynced_plot(map_path, save_mother_path)
                 if preview_plots and fig_index == 0:
                     preview_paths.append(map_path)
 
                 ## Make BL and NW 1D hist
-                self.make_BL_NW_1D_hists(current_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+                hist_path = self.make_BL_NW_1D_hists(current_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+                log_unsynced_plot(hist_path, save_mother_path)
 
             print(f"Saved baseline plots for {chip_name} to:")
             for chip_fig_outdir in chip_fig_outdirs:
