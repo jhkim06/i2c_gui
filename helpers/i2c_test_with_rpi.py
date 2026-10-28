@@ -17,9 +17,9 @@ parser = argparse.ArgumentParser(description="ETROC calibration script")
 parser.add_argument("--chip_name", type=str, default="test", help="Name of the chip")
 parser.add_argument("--save_notes", type=str, default="", help="Extra notes for saving")
 parser.add_argument(
-    "--show_plots",
+    "--no-show-plots",
     action="store_true",
-    help="Open the saved baseline/noise-width map in a separate window without pausing calibration",
+    help="Do not open the saved baseline/noise-width map (shown by default when a display is available)",
 )
 parser.add_argument("--_preview_png", type=Path, help=argparse.SUPPRESS)
 parser.add_argument(
@@ -103,7 +103,21 @@ i2c_conn.config_chips(
 now = datetime.datetime.now().isoformat(sep=' ', timespec='seconds')
 full_notes = f"{args.save_notes}" if args.save_notes else now
 
-preview_paths = i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes, preview_plots=args.show_plots)
+preview_paths = i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes, preview_plots=not args.no_show_plots)
+
+if not args.no_show_plots:
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        for preview_path in preview_paths:
+            subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), "--_preview_png", str(preview_path)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            print(f"Opening baseline/noise-width preview: {preview_path}")
+    else:
+        print("No graphical display is available; saved baseline/noise-width plots without opening a window.")
 
 acc_scurve_pixels = parse_pixel_list(args.acc_scurve_pixels)
 if acc_scurve_pixels:
@@ -119,17 +133,3 @@ if acc_scurve_pixels:
         hist_dir=output_dir,
         save_notes=full_notes,
     )
-
-if args.show_plots:
-    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
-        for preview_path in preview_paths:
-            subprocess.Popen(
-                [sys.executable, str(Path(__file__).resolve()), "--_preview_png", str(preview_path)],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            print(f"Opening baseline/noise-width preview: {preview_path}")
-    else:
-        print("No graphical display is available; saved baseline/noise-width plots without opening a window.")

@@ -384,6 +384,7 @@ def run_calibration(
         chip_name,
         "--save_notes",
         save_notes,
+        "--no-show-plots",
     ]
 
     start_line = f"$ {' '.join(cmd)}\n\n"
