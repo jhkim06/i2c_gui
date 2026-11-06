@@ -21,7 +21,6 @@ parser.add_argument(
     action="store_true",
     help="Do not open the saved baseline/noise-width map (shown by default when a display is available)",
 )
-parser.add_argument("--_preview_png", type=Path, help=argparse.SUPPRESS)
 parser.add_argument(
     "--acc_scurve_pixels",
     type=str,
@@ -38,16 +37,6 @@ parser.add_argument(
     help="Pixel power mode used when disabling/configuring pixels before auto-calibration. Use 'low' to keep ETROC in low power mode.",
 )
 args = parser.parse_args()
-
-if args._preview_png is not None:
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(16, 8))
-    ax.imshow(plt.imread(args._preview_png))
-    ax.axis("off")
-    fig.tight_layout()
-    plt.show()
-    raise SystemExit(0)
 
 try:
     _, output_dir, _ = helpers.measurement_output_paths()
@@ -106,13 +95,12 @@ full_notes = f"{args.save_notes}" if args.save_notes else now
 preview_paths = i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes, preview_plots=not args.no_show_plots)
 
 if not args.no_show_plots:
-    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+    if os.environ.get("DISPLAY") or os.environ.get("TMUX"):
         for preview_path in preview_paths:
             subprocess.Popen(
-                [sys.executable, str(Path(__file__).resolve()), "--_preview_png", str(preview_path)],
+                [sys.executable, str(Path(__file__).with_name("show_png_x11.py")), str(preview_path)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
             print(f"Opening baseline/noise-width preview: {preview_path}")
