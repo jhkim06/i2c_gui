@@ -57,8 +57,8 @@ def main() -> int:
 
     try:
         image = tk.PhotoImage(file=str(args.png))
-        max_width = max(1, int(window.winfo_screenwidth() * 0.9))
-        max_height = max(1, int(window.winfo_screenheight() * 0.9))
+        max_width = max(1, int(window.winfo_screenwidth() * 0.7))
+        max_height = max(1, int(window.winfo_screenheight() * 0.7))
         scale = max(1, math.ceil(image.width() / max_width), math.ceil(image.height() / max_height))
         if scale > 1:
             image = image.subsample(scale, scale)
