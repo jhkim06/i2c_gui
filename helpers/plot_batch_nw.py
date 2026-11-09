@@ -133,6 +133,10 @@ def main() -> int:
         "--per-measurement", action="store_true",
         help="overlay one colored histogram per complete 16×16 scan",
     )
+    parser.add_argument(
+        "--show-legend", action="store_true",
+        help="label each histogram in the per-measurement overlay",
+    )
     args = parser.parse_args()
 
     db_override = args.database
@@ -174,7 +178,7 @@ def main() -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
 
         hep.style.use("CMS")
-        height = max(10, len(scans) * 0.22 + 2) if args.per_measurement else 10
+        height = max(10, len(scans) * 0.22 + 2) if args.per_measurement and args.show_legend else 10
         fig, ax = plt.subplots(figsize=(14 if args.per_measurement else 10, height))
         try:
             title = f"Batch {args.batch}"
@@ -188,7 +192,8 @@ def main() -> int:
                         color=to_hex(colors[index - 1]), histtype="step",
                     )
                 format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
-                ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=10)
+                if args.show_legend:
+                    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=10)
             else:
                 draw_nw_1d(ax, np.asarray(values), title, note)
             fig.tight_layout()
