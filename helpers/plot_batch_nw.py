@@ -137,6 +137,10 @@ def main() -> int:
         "--show-legend", action="store_true",
         help="label each histogram in the per-measurement overlay",
     )
+    parser.add_argument(
+        "--nw-threshold", type=float, metavar="X",
+        help="print the start time of each complete scan with any NW value greater than X",
+    )
     args = parser.parse_args()
 
     db_override = args.database
@@ -148,12 +152,22 @@ def main() -> int:
         if not hybrids:
             raise ValueError(f"no hybrids assigned to batch {args.batch!r}")
         database = database_path(db_override)
-        if args.per_measurement:
+        if args.per_measurement or args.nw_threshold is not None:
             scans, skipped = batch_scans(database, hybrids)
+            if skipped:
+                print(f"Skipped {skipped} incomplete or malformed scan(s) in scan analysis", file=sys.stderr)
+        if args.nw_threshold is not None:
+            matches = 0
+            for name, start_time, scan_values in scans:
+                peak = max(scan_values)
+                if peak > args.nw_threshold:
+                    print(f"{name}: measurement start {start_time} (max NW {peak})")
+                    matches += 1
+            if not matches:
+                print(f"No complete scans with NW greater than {args.nw_threshold:g}")
+        if args.per_measurement:
             found = {name for name, _, _ in scans}
             entries = sum(len(values) for _, _, values in scans)
-            if skipped:
-                print(f"Skipped {skipped} incomplete or malformed scan(s)", file=sys.stderr)
         else:
             values, found = batch_noise_widths(database, hybrids)
             entries = len(values)
