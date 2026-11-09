@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot one pooled 1D noise-width histogram for a hybrid batch."""
+"""Plot pooled or overlaid 1D noise-width histograms for a hybrid batch."""
 
 import argparse
 from contextlib import closing
@@ -63,24 +63,54 @@ def batch_members(path: Path, batch: str) -> list[str]:
     return [hybrid for hybrid, category in members.items() if category == batch]
 
 
-def batch_noise_widths(database: Path, hybrids: list[str]) -> tuple[list[int], set[str]]:
-    values = []
-    found = set()
+def batch_rows(database: Path, hybrids: list[str], *, by_scan: bool = False):
+    columns = "chip_name, row, col, timestamp, noise_width" if by_scan else "chip_name, noise_width"
+    extra_filter = "ORDER BY chip_name, rowid" if by_scan else "AND noise_width IS NOT NULL"
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as connection:
         for start in range(0, len(hybrids), 900):
             names = hybrids[start:start + 900]
             placeholders = ",".join("?" for _ in names)
-            rows = connection.execute(
-                f"SELECT chip_name, noise_width FROM baselines "
-                f"WHERE chip_name IN ({placeholders}) AND noise_width IS NOT NULL",
+            yield from connection.execute(
+                f"SELECT {columns} FROM baselines WHERE chip_name IN ({placeholders}) {extra_filter}",
                 names,
             )
-            for name, value in rows:
-                if type(value) is not int or not 0 <= value < 16:
-                    raise ValueError(f"{name}: invalid noise_width {value!r}, expected an integer from 0 to 15")
-                values.append(value)
-                found.add(name)
+
+
+def valid_nw(name: str, value: int) -> int:
+    if type(value) is not int or not 0 <= value < 16:
+        raise ValueError(f"{name}: invalid noise_width {value!r}, expected an integer from 0 to 15")
+    return value
+
+
+def batch_noise_widths(database: Path, hybrids: list[str]) -> tuple[list[int], set[str]]:
+    values = []
+    found = set()
+    for name, value in batch_rows(database, hybrids):
+        values.append(valid_nw(name, value))
+        found.add(name)
     return values, found
+
+
+def batch_scans(database: Path, hybrids: list[str]):
+    """Recover complete scans from row-major pixel coordinates in insertion order."""
+    scans = []
+    skipped = 0
+    name, timestamp = None, None
+    pixels = []
+    expected = [(row, col) for row in range(16) for col in range(16)]
+    for chip, row, col, time, value in batch_rows(database, hybrids, by_scan=True):
+        if chip != name or (row, col) == (0, 0):
+            if pixels:
+                skipped += 1
+            name, timestamp, pixels = chip, time, []
+        pixels.append(((row, col), value))
+        if len(pixels) == len(expected):
+            if [coord for coord, _ in pixels] == expected and all(v is not None for _, v in pixels):
+                scans.append((name, timestamp, [valid_nw(name, v) for _, v in pixels]))
+            else:
+                skipped += 1
+            pixels = []
+    return scans, skipped + bool(pixels)
 
 
 def main() -> int:
@@ -99,6 +129,10 @@ def main() -> int:
         help="default: $ETROC_SQLITE_OUTPUT_DIR/BaselineHistory.sqlite, or helpers/output on the Pi",
     )
     parser.add_argument("--output", type=Path, help="output PNG (default: timestamped PNG in the current directory)")
+    parser.add_argument(
+        "--per-measurement", action="store_true",
+        help="overlay one colored histogram per complete 16×16 scan",
+    )
     args = parser.parse_args()
 
     db_override = args.database
@@ -109,11 +143,20 @@ def main() -> int:
         hybrids = batch_members(args.batch_file.expanduser(), args.batch)
         if not hybrids:
             raise ValueError(f"no hybrids assigned to batch {args.batch!r}")
-        values, found = batch_noise_widths(database_path(db_override), hybrids)
+        database = database_path(db_override)
+        if args.per_measurement:
+            scans, skipped = batch_scans(database, hybrids)
+            found = {name for name, _, _ in scans}
+            entries = sum(len(values) for _, _, values in scans)
+            if skipped:
+                print(f"Skipped {skipped} incomplete or malformed scan(s)", file=sys.stderr)
+        else:
+            values, found = batch_noise_widths(database, hybrids)
+            entries = len(values)
         missing = sorted(set(hybrids) - found)
         if missing:
             print(f"No NW measurements for: {', '.join(missing)}", file=sys.stderr)
-        if not values:
+        if not entries:
             raise ValueError(f"no NW measurements found for batch {args.batch!r}")
 
         import matplotlib
@@ -121,17 +164,32 @@ def main() -> int:
         import matplotlib.pyplot as plt
         import mplhep as hep
         import numpy as np
-        from i2c_gui2_helpers import draw_nw_1d
+        from i2c_gui2_helpers import draw_nw_1d, format_nw_axis, plot_nw_histogram
 
         label = re.sub(r"[^A-Za-z0-9_-]+", "_", args.batch).strip("_") or "selection"
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output = (args.output or Path(f"batch_{label}_NW_1D_hist_{timestamp}.png")).expanduser()
+        suffix = "_per_measurement" if args.per_measurement else ""
+        output = (args.output or Path(f"batch_{label}_NW_1D_hist{suffix}_{timestamp}.png")).expanduser()
         output.parent.mkdir(parents=True, exist_ok=True)
 
         hep.style.use("CMS")
-        fig, ax = plt.subplots(figsize=(10, 10))
+        height = max(10, len(scans) * 0.22 + 2) if args.per_measurement else 10
+        fig, ax = plt.subplots(figsize=(14 if args.per_measurement else 10, height))
         try:
-            draw_nw_1d(ax, np.asarray(values), f"Batch {args.batch}", f"{len(found)} hybrids, {len(values):,} pixel entries")
+            title = f"Batch {args.batch}"
+            note = f"{len(found)} hybrids, {entries:,} pixel entries"
+            if args.per_measurement:
+                colors = (plt.get_cmap("tab20").colors if len(scans) <= 20
+                          else plt.get_cmap("hsv")(np.arange(len(scans)) / len(scans)))
+                for index, (name, time, scan_values) in enumerate(scans, 1):
+                    plot_nw_histogram(
+                        ax, np.asarray(scan_values), label=f"{index}. {name}  {time}",
+                        color=colors[index - 1], histtype="step",
+                    )
+                format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
+                ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=10)
+            else:
+                draw_nw_1d(ax, np.asarray(values), title, note)
             fig.tight_layout()
             fig.savefig(output, format="png")
         finally:
@@ -140,7 +198,7 @@ def main() -> int:
         print(f"Batch NW plot failed: {error}", file=sys.stderr)
         return 1
 
-    print(f"Saved {output} ({len(found)} hybrids, {len(values):,} pixel entries)")
+    print(f"Saved {output} ({len(found)} hybrids, {entries:,} pixel entries)")
     return 0
 
 

@@ -72,20 +72,31 @@ def saving_bl_nw_map():
         print("\r" + " " * len("Saving BL/NW map...") + "\r", end="", flush=True)
 
 
-def draw_nw_1d(ax, nw_array: np.ndarray, title: str, note: str) -> None:
-    """Draw the noise-width panel shared by scan and batch plots."""
+def plot_nw_histogram(ax, nw_array: np.ndarray, label: str | None = None, **style) -> None:
+    """Plot NW pixel counts using the standard ETROC bins."""
     import hist
+
+    nw_hist = hist.Hist(hist.axis.Regular(16, 0, 16, name='nw', label='NW [DAC]'))
+    nw_hist.fill(nw_array)
+    if label is None:
+        label = f'Mean: {nw_array.mean():.2f}, Std: {nw_array.std():.2f}'
+    nw_hist.plot1d(ax=ax, yerr=False, label=label, **style)
+
+
+def format_nw_axis(ax, title: str, note: str) -> None:
     import matplotlib.ticker as ticker
     import mplhep as hep
 
     hep.cms.text(loc=0, ax=ax, fontsize=17, text="ETL ETROC")
     ax.set_title(f"{title}: NW (DAC LSB)\n{note}", size=17, loc="right")
-    nw_hist = hist.Hist(hist.axis.Regular(16, 0, 16, name='nw', label='NW [DAC]'))
-    nw_hist.fill(nw_array)
-    mean, std = nw_array.mean(), nw_array.std()
-    nw_hist.plot1d(ax=ax, yerr=False, label=f'Mean: {mean:.2f}, Std: {std:.2f}')
     ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
     ax.xaxis.set_minor_locator(ticker.NullLocator())
+
+
+def draw_nw_1d(ax, nw_array: np.ndarray, title: str, note: str) -> None:
+    """Draw the noise-width panel shared by scan and batch plots."""
+    plot_nw_histogram(ax, nw_array)
+    format_nw_axis(ax, title, note)
     ax.legend()
 
 
