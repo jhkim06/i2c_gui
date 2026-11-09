@@ -72,6 +72,23 @@ def saving_bl_nw_map():
         print("\r" + " " * len("Saving BL/NW map...") + "\r", end="", flush=True)
 
 
+def draw_nw_1d(ax, nw_array: np.ndarray, title: str, note: str) -> None:
+    """Draw the noise-width panel shared by scan and batch plots."""
+    import hist
+    import matplotlib.ticker as ticker
+    import mplhep as hep
+
+    hep.cms.text(loc=0, ax=ax, fontsize=17, text="ETL ETROC")
+    ax.set_title(f"{title}: NW (DAC LSB)\n{note}", size=17, loc="right")
+    nw_hist = hist.Hist(hist.axis.Regular(16, 0, 16, name='nw', label='NW [DAC]'))
+    nw_hist.fill(nw_array)
+    mean, std = nw_array.mean(), nw_array.std()
+    nw_hist.plot1d(ax=ax, yerr=False, label=f'Mean: {mean:.2f}, Std: {std:.2f}')
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
+    ax.xaxis.set_minor_locator(ticker.NullLocator())
+    ax.legend()
+
+
 class i2c_connection():
     _chips = None
 
@@ -954,7 +971,6 @@ class i2c_connection():
     def make_BL_NW_1D_hists(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp):
         import hist
         import matplotlib.pyplot as plt
-        import matplotlib.ticker as ticker
         import mplhep as hep
         hep.style.use('CMS')
 
@@ -968,16 +984,7 @@ class i2c_connection():
         bl_hist.plot1d(ax=axes[0], yerr=False, label=f'Mean: {mean:.2f}, Std: {std:.2f}')
         axes[0].legend()
 
-        hep.cms.text(loc=0, ax=axes[1], fontsize=17, text="ETL ETROC")
-        axes[1].set_title(f"{given_chip_name}: NW (DAC LSB)\n{note}", size=17, loc="right")
-        nw_hist = hist.Hist(hist.axis.Regular(16, 0, 16, name='nw', label='NW [DAC]'))
-        nw_array = input_df['noise_width'].to_numpy().flatten()
-        nw_hist.fill(nw_array)
-        mean, std = nw_array.mean(), nw_array.std()
-        nw_hist.plot1d(ax=axes[1], yerr=False, label=f'Mean: {mean:.2f}, Std: {std:.2f}')
-        axes[1].xaxis.set_major_locator(ticker.MultipleLocator(1))
-        axes[1].xaxis.set_minor_locator(ticker.NullLocator())
-        axes[1].legend()
+        draw_nw_1d(axes[1], input_df['noise_width'].to_numpy().flatten(), given_chip_name, note)
 
         plt.tight_layout()
         plot_path = save_path / f'{given_chip_name}_BL_NW_1D_hist_{timestamp}.png'
