@@ -162,6 +162,7 @@ def main() -> int:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.colors import to_hex
         import mplhep as hep
         import numpy as np
         from i2c_gui2_helpers import draw_nw_1d, format_nw_axis, plot_nw_histogram
@@ -184,7 +185,7 @@ def main() -> int:
                 for index, (name, time, scan_values) in enumerate(scans, 1):
                     plot_nw_histogram(
                         ax, np.asarray(scan_values), label=f"{index}. {name}  {time}",
-                        color=colors[index - 1], histtype="step",
+                        color=to_hex(colors[index - 1]), histtype="step",
                     )
                 format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
                 ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=10)
