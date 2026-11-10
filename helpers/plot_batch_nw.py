@@ -137,6 +137,54 @@ def layout_measurement_legend(fig, ax) -> None:
     ax.set_position([position.x0 * scale, position.y0, position.width * scale, position.height])
 
 
+def place_scatter_labels(fig, ax, labels, points) -> int:
+    """Find nearby label positions in display coordinates after figure layout."""
+    from matplotlib.transforms import Bbox
+
+    if not labels:
+        return 0
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    pixels_per_point = renderer.points_to_pixels(1)
+    bounds = ax.bbox.padded(-4 * pixels_per_point)
+    point_padding = 5 * pixels_per_point
+    occupied = [
+        Bbox.from_extents(x - point_padding, y - point_padding,
+                          x + point_padding, y + point_padding)
+        for x, y in ax.transData.transform(points)
+    ]
+    # Search closest offsets first, keeping the usual position for isolated points.
+    offsets = sorted(
+        ((dx, dy) for dx in range(-240, 241, 12) for dy in range(-240, 241, 12)),
+        key=lambda offset: offset[0] ** 2 + offset[1] ** 2,
+    )
+    unresolved = 0
+    for label in labels:
+        original = label.get_window_extent(renderer).padded(2 * pixels_per_point)
+        for dx, dy in offsets:
+            candidate = original.translated(dx * pixels_per_point, dy * pixels_per_point)
+            if not (bounds.contains(candidate.x0, candidate.y0)
+                    and bounds.contains(candidate.x1, candidate.y1)):
+                continue
+            if any(candidate.overlaps(other) for other in occupied):
+                continue
+            offset = (5 + dx, dy)
+            label.set_position(offset)
+            occupied.append(candidate)
+            if dx or dy:
+                ax.annotate(
+                    "", xy=label.xy, xytext=offset, textcoords="offset points",
+                    arrowprops={"arrowstyle": "-", "color": "0.45", "lw": 0.6,
+                                "shrinkA": 2, "shrinkB": 4},
+                    zorder=2,
+                )
+            break
+        else:
+            occupied.append(original)
+            unresolved += 1
+    return unresolved
+
+
 def main() -> int:
     pi_repo = Path.home() / "ETL" / "i2c_gui"
     figure_root = Path(os.environ.get(
@@ -257,6 +305,7 @@ def main() -> int:
         try:
             if args.mean_std:
                 stats_fig, stats_ax = plt.subplots(figsize=(14, 10))
+                stats_labels, stats_points = [], []
             title = f"Batch {args.batch}"
             #note = f"{len(found)} hybrids, {entries:,} pixel entries"
             note = f"{len(found)} bare ETROCs"
@@ -281,13 +330,16 @@ def main() -> int:
                     if stats_fig is not None:
                         mean_nw = pixel_values.mean()
                         std_nw = pixel_values.std()
+                        stats_points.append((mean_nw, std_nw))
                         stats_ax.scatter(mean_nw, std_nw, label=scan_label, color=color, zorder=zorder)
                         if args.std_label_threshold is not None and std_nw > args.std_label_threshold:
-                            stats_ax.annotate(
+                            annotation = stats_ax.annotate(
                                 name, (mean_nw, std_nw), xytext=(5, 0),
                                 textcoords="offset points", ha="left", va="center", fontsize=10,
                                 rotation=45, rotation_mode="anchor",
                             )
+                            annotation.set_in_layout(False)
+                            stats_labels.append(annotation)
                 #format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
                 format_nw_axis(ax, title, f"{note}")
             else:
@@ -309,6 +361,9 @@ def main() -> int:
                     layout_measurement_legend(stats_fig, stats_ax)
                 else:
                     stats_fig.tight_layout()
+                unresolved = place_scatter_labels(stats_fig, stats_ax, stats_labels, stats_points)
+                if unresolved:
+                    print(f"Could not find clear space for {unresolved} scatter label(s)", file=sys.stderr)
                 stats_fig.savefig(stats_output, format="png")
                 print(f"Saved {stats_output} ({len(scans)} scans)")
         finally:
