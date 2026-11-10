@@ -113,6 +113,30 @@ def batch_scans(database: Path, hybrids: list[str]):
     return scans, skipped + bool(pixels)
 
 
+def layout_measurement_legend(fig, ax) -> None:
+    """Keep the single-column plot dimensions and widen the legend area as needed."""
+    handles, labels = ax.get_legend_handles_labels()
+    labels_per_column = 30
+    columns = max(1, (len(labels) + labels_per_column - 1) // labels_per_column)
+    legend_options = dict(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=10)
+    legend = ax.legend(handles[:labels_per_column], labels[:labels_per_column], **legend_options)
+    fig.tight_layout()
+    if columns == 1:
+        return
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    single_column_right = legend.get_window_extent(renderer).x1
+    position = ax.get_position().frozen()
+    width = fig.get_figwidth()
+    legend = ax.legend(handles, labels, ncol=columns, **legend_options)
+    extra_width = max(0, legend.get_window_extent(renderer).x1 - single_column_right) / fig.dpi
+
+    fig.set_figwidth(width + extra_width)
+    scale = width / fig.get_figwidth()
+    ax.set_position([position.x0 * scale, position.y0, position.width * scale, position.height])
+
+
 def main() -> int:
     pi_repo = Path.home() / "ETL" / "i2c_gui"
     figure_root = Path(os.environ.get(
@@ -192,11 +216,11 @@ def main() -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
 
         hep.style.use("CMS")
-        height = max(10, len(scans) * 0.22 + 2) if args.per_measurement and args.show_legend else 10
-        fig, ax = plt.subplots(figsize=(14 if args.per_measurement else 10, height))
+        fig, ax = plt.subplots(figsize=(14 if args.per_measurement else 10, 10))
         try:
             title = f"Batch {args.batch}"
-            note = f"{len(found)} hybrids, {entries:,} pixel entries"
+            #note = f"{len(found)} hybrids, {entries:,} pixel entries"
+            note = f"{len(found)} bare ETROCs"
             if args.per_measurement:
                 colors = (plt.get_cmap("tab20").colors if len(scans) <= 20
                           else plt.get_cmap("hsv")(np.arange(len(scans)) / len(scans)))
@@ -205,12 +229,14 @@ def main() -> int:
                         ax, np.asarray(scan_values), label=f"{index}. {name}  {time}",
                         color=to_hex(colors[index - 1]), histtype="step",
                     )
-                format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
-                if args.show_legend:
-                    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=10)
+                #format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
+                format_nw_axis(ax, title, f"{note}")
             else:
                 draw_nw_1d(ax, np.asarray(values), title, note)
-            fig.tight_layout()
+            if args.per_measurement and args.show_legend:
+                layout_measurement_legend(fig, ax)
+            else:
+                fig.tight_layout()
             fig.savefig(output, format="png")
         finally:
             plt.close(fig)
@@ -224,3 +250,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
