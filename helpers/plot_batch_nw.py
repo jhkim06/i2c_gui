@@ -169,7 +169,17 @@ def main() -> int:
         "--highlight-above-threshold", action="store_true",
         help="overlay scans, coloring and labeling only those above --nw-threshold",
     )
+    parser.add_argument(
+        "--mean-std", action="store_true",
+        help="save a mean vs. standard deviation scatter plot alongside the per-measurement histogram",
+    )
+    parser.add_argument(
+        "--skip-all-zero", action="store_true",
+        help="exclude complete scans with zero NW in every pixel (pool only complete scans)",
+    )
     args = parser.parse_args()
+    if args.mean_std:
+        args.per_measurement = True
     if args.highlight_above_threshold:
         if args.nw_threshold is None:
             parser.error("--highlight-above-threshold requires --nw-threshold")
@@ -185,10 +195,18 @@ def main() -> int:
         if not hybrids:
             raise ValueError(f"no hybrids assigned to batch {args.batch!r}")
         database = database_path(db_override)
-        if args.per_measurement or args.nw_threshold is not None:
+        if args.per_measurement or args.skip_all_zero or args.nw_threshold is not None:
             scans, skipped = batch_scans(database, hybrids)
             if skipped:
                 print(f"Skipped {skipped} incomplete or malformed scan(s) in scan analysis", file=sys.stderr)
+        if args.skip_all_zero:
+            scan_count = len(scans)
+            scans = [scan for scan in scans if any(scan[2])]
+            zero_count = scan_count - len(scans)
+            if zero_count:
+                print(f"Skipped {zero_count} all-zero NW scan(s)", file=sys.stderr)
+            if not scans:
+                raise ValueError(f"no complete scans with nonzero NW found for batch {args.batch!r}")
         above_threshold = set()
         if args.nw_threshold is not None:
             for index, (name, start_time, scan_values) in enumerate(scans, 1):
@@ -198,9 +216,11 @@ def main() -> int:
                     above_threshold.add(index)
             if not above_threshold:
                 print(f"No complete scans with NW greater than {args.nw_threshold:g}")
-        if args.per_measurement:
+        if args.per_measurement or args.skip_all_zero:
             found = {name for name, _, _ in scans}
-            entries = sum(len(values) for _, _, values in scans)
+            entries = sum(len(scan_values) for _, _, scan_values in scans)
+            if not args.per_measurement:
+                values = [nw for _, _, scan_values in scans for nw in scan_values]
         else:
             values, found = batch_noise_widths(database, hybrids)
             entries = len(values)
@@ -224,9 +244,13 @@ def main() -> int:
         output = (args.output or Path(f"batch_{label}_NW_1D_hist{suffix}_{timestamp}.png")).expanduser()
         output.parent.mkdir(parents=True, exist_ok=True)
 
+        stats_output = output.with_name(f"{output.stem}_mean_std.png")
         hep.style.use("CMS")
         fig, ax = plt.subplots(figsize=(14 if args.per_measurement else 10, 10))
+        stats_fig = None
         try:
+            if args.mean_std:
+                stats_fig, stats_ax = plt.subplots(figsize=(14, 10))
             title = f"Batch {args.batch}"
             #note = f"{len(found)} hybrids, {entries:,} pixel entries"
             note = f"{len(found)} bare ETROCs"
@@ -236,30 +260,50 @@ def main() -> int:
                           else plt.get_cmap("hsv")(np.arange(colored_count) / colored_count))
                 color_index = 0
                 for index, (name, time, scan_values) in enumerate(scans, 1):
-                    if args.highlight_above_threshold and index not in above_threshold:
-                        plot_nw_histogram(
-                            ax, np.asarray(scan_values), label="_nolegend_",
-                            color="0.65", zorder=0.5, histtype="step",
-                        )
-                        continue
+                    pixel_values = np.asarray(scan_values)
+                    gray = args.highlight_above_threshold and index not in above_threshold
+                    if gray:
+                        scan_label, color, zorder = "_nolegend_", "0.65", 0.5
+                    else:
+                        scan_label = f"{index}. {name}  {time}"
+                        color, zorder = to_hex(colors[color_index]), 1
+                        color_index += 1
                     plot_nw_histogram(
-                        ax, np.asarray(scan_values), label=f"{index}. {name}  {time}",
-                        color=to_hex(colors[color_index]), histtype="step",
+                        ax, pixel_values, label=scan_label, color=color,
+                        zorder=zorder, histtype="step",
                     )
-                    color_index += 1
+                    if stats_fig is not None:
+                        stats_ax.scatter(
+                            pixel_values.mean(), pixel_values.std(),
+                            label=scan_label, color=color, zorder=zorder,
+                        )
                 #format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
                 format_nw_axis(ax, title, f"{note}")
             else:
                 draw_nw_1d(ax, np.asarray(values), title, note)
-            if args.per_measurement and args.show_legend and (
-                not args.highlight_above_threshold or above_threshold
-            ):
+            show_legend = args.per_measurement and args.show_legend and (
+                not args.highlight_above_threshold or bool(above_threshold)
+            )
+            if show_legend:
                 layout_measurement_legend(fig, ax)
             else:
                 fig.tight_layout()
             fig.savefig(output, format="png")
+            if stats_fig is not None:
+                hep.cms.text(loc=0, ax=stats_ax, fontsize=17, text="ETL ETROC")
+                stats_ax.set_title(f"{title}: NW mean vs. standard deviation", loc="right", fontsize=17)
+                stats_ax.set_xlabel("Mean NW [DAC LSB]")
+                stats_ax.set_ylabel("Standard deviation of NW [DAC LSB]")
+                if show_legend:
+                    layout_measurement_legend(stats_fig, stats_ax)
+                else:
+                    stats_fig.tight_layout()
+                stats_fig.savefig(stats_output, format="png")
+                print(f"Saved {stats_output} ({len(scans)} scans)")
         finally:
             plt.close(fig)
+            if stats_fig is not None:
+                plt.close(stats_fig)
     except (OSError, sqlite3.Error, ValueError, ImportError) as error:
         print(f"Batch NW plot failed: {error}", file=sys.stderr)
         return 1
