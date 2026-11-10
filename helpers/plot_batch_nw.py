@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
+from urllib.parse import urlencode
 
 from export_bl_nw_json import database_path
 
@@ -229,7 +230,13 @@ def main() -> int:
         "--std-label-threshold", type=float, metavar="X",
         help="label scatter points with their ETROC name when NW standard deviation exceeds X",
     )
+    parser.add_argument(
+        "--clickable-labels", action="store_true",
+        help="also save an SVG with ETROC labels linked to the CERN plot gallery",
+    )
     args = parser.parse_args()
+    if args.clickable_labels and args.std_label_threshold is None:
+        parser.error("--clickable-labels requires --std-label-threshold")
     if args.std_label_threshold is not None:
         args.mean_std = True
     if args.mean_std:
@@ -338,6 +345,13 @@ def main() -> int:
                                 textcoords="offset points", ha="left", va="center", fontsize=10,
                                 rotation=45, rotation_mode="anchor",
                             )
+                            if args.clickable_labels:
+                                gallery = (
+                                    "https://jhkim.web.cern.ch/MTD/Hybrid%20sensor%20probe%20system/"
+                                    "Plots/Hybrid_QA_QC/ETROC-figures/index.php"
+                                )
+                                query = urlencode({"path": f"by_hybrid_name/{name}"})
+                                annotation.set_url(f"{gallery}?{query}")
                             annotation.set_in_layout(False)
                             stats_labels.append(annotation)
                 #format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
@@ -366,6 +380,10 @@ def main() -> int:
                     print(f"Could not find clear space for {unresolved} scatter label(s)", file=sys.stderr)
                 stats_fig.savefig(stats_output, format="png")
                 print(f"Saved {stats_output} ({len(scans)} scans)")
+                if args.clickable_labels:
+                    svg_output = stats_output.with_suffix(".svg")
+                    stats_fig.savefig(svg_output, format="svg")
+                    print(f"Saved {svg_output} (clickable ETROC labels)")
         finally:
             plt.close(fig)
             if stats_fig is not None:
