@@ -286,6 +286,7 @@ def main() -> int:
                             stats_ax.annotate(
                                 name, (mean_nw, std_nw), xytext=(5, 0),
                                 textcoords="offset points", ha="left", va="center", fontsize=10,
+                                rotation=45, rotation_mode="anchor",
                             )
                 #format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
                 format_nw_axis(ax, title, f"{note}")
