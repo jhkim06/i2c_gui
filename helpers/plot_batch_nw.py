@@ -165,7 +165,16 @@ def main() -> int:
         "--nw-threshold", type=float, metavar="X",
         help="print the start time of each complete scan with any NW value greater than X",
     )
+    parser.add_argument(
+        "--highlight-above-threshold", action="store_true",
+        help="overlay scans, coloring and labeling only those above --nw-threshold",
+    )
     args = parser.parse_args()
+    if args.highlight_above_threshold:
+        if args.nw_threshold is None:
+            parser.error("--highlight-above-threshold requires --nw-threshold")
+        args.per_measurement = True
+        args.show_legend = True
 
     db_override = args.database
     if db_override is None and not os.environ.get("ETROC_SQLITE_OUTPUT_DIR"):
@@ -180,14 +189,14 @@ def main() -> int:
             scans, skipped = batch_scans(database, hybrids)
             if skipped:
                 print(f"Skipped {skipped} incomplete or malformed scan(s) in scan analysis", file=sys.stderr)
+        above_threshold = set()
         if args.nw_threshold is not None:
-            matches = 0
-            for name, start_time, scan_values in scans:
+            for index, (name, start_time, scan_values) in enumerate(scans, 1):
                 peak = max(scan_values)
                 if peak > args.nw_threshold:
                     print(f"{name}: measurement start {start_time} (max NW {peak})")
-                    matches += 1
-            if not matches:
+                    above_threshold.add(index)
+            if not above_threshold:
                 print(f"No complete scans with NW greater than {args.nw_threshold:g}")
         if args.per_measurement:
             found = {name for name, _, _ in scans}
@@ -222,18 +231,29 @@ def main() -> int:
             #note = f"{len(found)} hybrids, {entries:,} pixel entries"
             note = f"{len(found)} bare ETROCs"
             if args.per_measurement:
-                colors = (plt.get_cmap("tab20").colors if len(scans) <= 20
-                          else plt.get_cmap("hsv")(np.arange(len(scans)) / len(scans)))
+                colored_count = len(above_threshold) if args.highlight_above_threshold else len(scans)
+                colors = (plt.get_cmap("tab20").colors if colored_count <= 20
+                          else plt.get_cmap("hsv")(np.arange(colored_count) / colored_count))
+                color_index = 0
                 for index, (name, time, scan_values) in enumerate(scans, 1):
+                    if args.highlight_above_threshold and index not in above_threshold:
+                        plot_nw_histogram(
+                            ax, np.asarray(scan_values), label="_nolegend_",
+                            color="0.65", zorder=0.5, histtype="step",
+                        )
+                        continue
                     plot_nw_histogram(
                         ax, np.asarray(scan_values), label=f"{index}. {name}  {time}",
-                        color=to_hex(colors[index - 1]), histtype="step",
+                        color=to_hex(colors[color_index]), histtype="step",
                     )
+                    color_index += 1
                 #format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
                 format_nw_axis(ax, title, f"{note}")
             else:
                 draw_nw_1d(ax, np.asarray(values), title, note)
-            if args.per_measurement and args.show_legend:
+            if args.per_measurement and args.show_legend and (
+                not args.highlight_above_threshold or above_threshold
+            ):
                 layout_measurement_legend(fig, ax)
             else:
                 fig.tight_layout()
@@ -250,4 +270,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
