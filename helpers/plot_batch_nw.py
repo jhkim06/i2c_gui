@@ -177,7 +177,13 @@ def main() -> int:
         "--skip-all-zero", action="store_true",
         help="exclude complete scans with zero NW in every pixel (pool only complete scans)",
     )
+    parser.add_argument(
+        "--std-label-threshold", type=float, metavar="X",
+        help="label scatter points with their ETROC name when NW standard deviation exceeds X",
+    )
     args = parser.parse_args()
+    if args.std_label_threshold is not None:
+        args.mean_std = True
     if args.mean_std:
         args.per_measurement = True
     if args.highlight_above_threshold:
@@ -273,10 +279,14 @@ def main() -> int:
                         zorder=zorder, histtype="step",
                     )
                     if stats_fig is not None:
-                        stats_ax.scatter(
-                            pixel_values.mean(), pixel_values.std(),
-                            label=scan_label, color=color, zorder=zorder,
-                        )
+                        mean_nw = pixel_values.mean()
+                        std_nw = pixel_values.std()
+                        stats_ax.scatter(mean_nw, std_nw, label=scan_label, color=color, zorder=zorder)
+                        if args.std_label_threshold is not None and std_nw > args.std_label_threshold:
+                            stats_ax.annotate(
+                                name, (mean_nw, std_nw), xytext=(5, 0),
+                                textcoords="offset points", ha="left", va="center", fontsize=10,
+                            )
                 #format_nw_axis(ax, title, f"{len(scans)} scans, {note}")
                 format_nw_axis(ax, title, f"{note}")
             else:
