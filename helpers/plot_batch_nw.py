@@ -232,7 +232,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--clickable-labels", action="store_true",
-        help="also save an SVG with ETROC labels linked to the CERN plot gallery",
+        help="also save a PDF with ETROC labels linked to the CERN plot gallery",
     )
     args = parser.parse_args()
     if args.clickable_labels and args.std_label_threshold is None:
@@ -381,9 +381,9 @@ def main() -> int:
                 stats_fig.savefig(stats_output, format="png")
                 print(f"Saved {stats_output} ({len(scans)} scans)")
                 if args.clickable_labels:
-                    svg_output = stats_output.with_suffix(".svg")
-                    stats_fig.savefig(svg_output, format="svg")
-                    print(f"Saved {svg_output} (clickable ETROC labels)")
+                    pdf_output = stats_output.with_suffix(".pdf")
+                    stats_fig.savefig(pdf_output, format="pdf")
+                    print(f"Saved {pdf_output} (clickable ETROC labels)")
         finally:
             plt.close(fig)
             if stats_fig is not None:
