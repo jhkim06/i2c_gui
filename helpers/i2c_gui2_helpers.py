@@ -139,6 +139,7 @@ class i2c_connection():
                      do_disable_and_calibration: bool = False,
                      do_prepare_ws_testing: bool = False,
                      power_mode: str = "high",
+                     rail_monitor=None,
                      ):
 
         for chip_address, chip_name, ws_address in zip(self.chip_addresses, self.chip_names, self.ws_addresses):
@@ -149,10 +150,10 @@ class i2c_connection():
             if( do_basic_peripheral_register_check ): self.basic_peripheral_register_check(chip_address, chip)
             if( do_set_chip_peripherals ): self.set_chip_peripherals(chip_address, chip)
             if( do_disable_all_pixels ): self.disable_all_pixels(chip_address, chip, power_mode=power_mode)
-            if( do_auto_calibration ): self.auto_calibration(chip_address, chip_name, chip)
+            if( do_auto_calibration ): self.auto_calibration(chip_address, chip_name, chip, rail_monitor=rail_monitor)
             if ( do_disable_and_calibration ):
                 self.disable_all_pixels(chip_address, chip, power_mode=power_mode)
-                self.auto_calibration(chip_address, chip_name, chip)
+                self.auto_calibration(chip_address, chip_name, chip, rail_monitor=rail_monitor)
             if( do_prepare_ws_testing ): self.prepare_ws_testing(chip_address, ws_address, chip)
 
     def __del__(self):
@@ -179,7 +180,7 @@ class i2c_connection():
 
     #--------------------------------------------------------------------------#
     def auto_cal_single_pixel(self, chip_address: list[int], row: int, col: int, bl_nw_output: dict,
-                              chip: i2c_gui2.ETROC2_Chip=None, verbose: bool = False):
+                              chip: i2c_gui2.ETROC2_Chip=None, verbose: bool = False, rail_monitor=None):
 
         if(chip == None and chip_address != None):
             chip: i2c_gui2.ETROC2_Chip = self.get_chip_i2c_connection(chip_address)
@@ -235,6 +236,19 @@ class i2c_connection():
         bl_nw_output['baseline'].append(chip.get_decoded_value("ETROC2", "Pixel Status", "BL"))
         bl_nw_output['noise_width'].append(chip.get_decoded_value("ETROC2", "Pixel Status", "NW"))
         bl_nw_output['timestamp'].append(datetime.datetime.now())
+        if rail_monitor is not None:
+            try:
+                sample = rail_monitor.sample()
+                bl_nw_output['rail_sample_time'].append(sample.timestamp)
+                bl_nw_output['rail_meas_voltage_V'].append(sample.voltage_v)
+                bl_nw_output['rail_meas_current_A'].append(sample.current_a)
+                bl_nw_output['rail_measurement_error'].append(None)
+            except Exception as exc:
+                print(f"CH1 supply read failed at pixel ({row},{col}): {exc}")
+                bl_nw_output['rail_sample_time'].append(None)
+                bl_nw_output['rail_meas_voltage_V'].append(None)
+                bl_nw_output['rail_meas_current_A'].append(None)
+                bl_nw_output['rail_measurement_error'].append(str(exc))
 
         # Disable TDC
         chip.set_decoded_value("ETROC2", "Pixel Config", "enable_TDC", 0)
@@ -606,7 +620,7 @@ class i2c_connection():
 
     #--------------------------------------------------------------------------#
     # Function 4
-    def auto_calibration(self, chip_address, chip_name, chip: i2c_gui2.ETROC2_Chip = None, ver_on: bool = False):
+    def auto_calibration(self, chip_address, chip_name, chip: i2c_gui2.ETROC2_Chip = None, ver_on: bool = False, rail_monitor=None):
 
         if(chip == None):
             chip: i2c_gui2.ETROC2_Chip = self.get_chip_i2c_connection(chip_address)
@@ -618,11 +632,13 @@ class i2c_connection():
             'noise_width': [],
             'timestamp': [],
         }
+        if rail_monitor is not None:
+            bl_nw_dict.update(rail_sample_time=[], rail_meas_voltage_V=[], rail_meas_current_A=[], rail_measurement_error=[])
 
         # Loop for threshold calibration
         for row in tqdm(range(16), desc="Calibrating row", position=0):
             for col in range(16):
-                self.auto_cal_single_pixel(chip_address=chip_address, row=row, col=col, bl_nw_output=bl_nw_dict, chip=chip, verbose=ver_on)
+                self.auto_cal_single_pixel(chip_address=chip_address, row=row, col=col, bl_nw_output=bl_nw_dict, chip=chip, verbose=ver_on, rail_monitor=rail_monitor)
 
         bl_nw_df = pd.DataFrame(data = bl_nw_dict)
         bl_nw_df['chip_name'] = chip_name
@@ -1042,6 +1058,9 @@ class i2c_connection():
             ### Save baseline into SQL
             current_df.loc[:, "save_notes"] = save_notes
             with sqlite3.connect(outfile) as sqlconn:
+                if 'rail_meas_current_A' in current_df.columns:
+                    from keysight_e36312a_monitor import ensure_baseline_rail_columns
+                    ensure_baseline_rail_columns(sqlconn)
                 current_df.to_sql('baselines', sqlconn, if_exists='append', index=False)
 
             for fig_index, chip_fig_outdir in enumerate(chip_fig_outdirs):

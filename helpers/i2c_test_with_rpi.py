@@ -7,6 +7,7 @@ import subprocess
 import sys
 import numpy as np
 from tqdm import tqdm
+from keysight_e36312a_monitor import KeysightRailMonitor
 
 
 # --------------------------
@@ -16,6 +17,8 @@ parser = argparse.ArgumentParser(description="ETROC calibration script")
 
 parser.add_argument("--chip_name", type=str, default="test", help="Name of the chip")
 parser.add_argument("--save_notes", type=str, default="", help="Extra notes for saving")
+parser.add_argument("--measure-1v2", action="store_true", help="Record Keysight CH1 measured voltage/current for each calibrated pixel")
+parser.add_argument("--psu-device", type=str, help="USBTMC path for the E36312A (auto-detected if omitted)")
 parser.add_argument(
     "--no-show-plots",
     action="store_true",
@@ -37,6 +40,8 @@ parser.add_argument(
     help="Pixel power mode used when disabling/configuring pixels before auto-calibration. Use 'low' to keep ETROC in low power mode.",
 )
 args = parser.parse_args()
+if args.psu_device and not args.measure_1v2:
+    parser.error("--psu-device requires --measure-1v2")
 
 try:
     _, output_dir, _ = helpers.measurement_output_paths()
@@ -63,6 +68,7 @@ def parse_pixel_list(pixel_string):
     return pixels
 
 chip_names = [args.chip_name]
+rail_monitor = KeysightRailMonitor(channel=1, device=args.psu_device) if args.measure_1v2 else None
 port = "/dev/ttyACM0"
 chip_addresses = [0x60]
 ws_addresses = [None] * len(chip_addresses)
@@ -86,6 +92,7 @@ i2c_conn.config_chips(
     do_disable_and_calibration=True,
     do_prepare_ws_testing=False,
     power_mode=args.power_mode,
+    rail_monitor=rail_monitor,
 )
 
 ### Save BL and NW
