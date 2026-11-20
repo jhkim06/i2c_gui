@@ -1039,6 +1039,44 @@ class i2c_connection():
         fig.savefig(plot_path)
         return plot_path
 
+    def make_rail_readback_1D_plot(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp):
+        import hist
+        import matplotlib.pyplot as plt
+        import mplhep as hep
+        hep.style.use('CMS')
+
+        voltage = pd.to_numeric(input_df['rail_meas_voltage_V'], errors='coerce').to_numpy()
+        current_a = pd.to_numeric(input_df['rail_meas_current_A'], errors='coerce').to_numpy()
+
+        fig, axes = plt.subplots(1, 2, figsize=(20, 10))
+        for ax, values, label, unit in (
+            (axes[0], voltage, 'CH1 voltage', 'V'),
+            (axes[1], current_a, 'CH1 current', 'A'),
+        ):
+            valid_values = values[np.isfinite(values)]
+            if valid_values.size:
+                lower, upper = valid_values.min(), valid_values.max()
+                padding = 0.05 * (upper - lower) if upper > lower else max(abs(lower) * 0.01, 0.001)
+                value_hist = hist.Hist(hist.axis.Regular(30, lower - padding, upper + padding,
+                                                       label=f'{label} [{unit}]'))
+                value_hist.fill(valid_values)
+                precision = 5 if unit == 'A' else 3
+                value_hist.plot1d(ax=ax, yerr=False,
+                                  label=f'Mean: {valid_values.mean():.{precision}f}, Std: {valid_values.std():.{precision}f}')
+                ax.legend(loc='upper right')
+            else:
+                ax.text(0.5, 0.5, 'No valid samples', transform=ax.transAxes,
+                        ha='center', va='center')
+                ax.set_xlabel(f'{label} [{unit}]')
+            ax.set_title(f'{given_chip_name}: {label} ({unit})\n{note}', size=17, loc='right')
+            hep.cms.text(loc=0, ax=ax, fontsize=17, text='ETL ETROC')
+
+        plt.tight_layout()
+        plot_path = save_path / f'{given_chip_name}_CH1_voltage_current_1D_hist_{timestamp}.png'
+        fig.savefig(plot_path)
+        plt.close(fig)
+        return plot_path
+
 
     #--------------------------------------------------------------------------#
     def save_baselines(
@@ -1094,6 +1132,10 @@ class i2c_connection():
                 ## Make BL and NW 1D hist
                 hist_path = self.make_BL_NW_1D_hists(current_df, chip_name, save_notes, chip_fig_outdir, timestamp)
                 log_unsynced_plot(hist_path, save_mother_path)
+
+                if {'rail_meas_voltage_V', 'rail_meas_current_A'}.issubset(current_df.columns):
+                    rail_path = self.make_rail_readback_1D_plot(current_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+                    log_unsynced_plot(rail_path, save_mother_path)
 
             print(f"Saved baseline plots for {chip_name} to:")
             for chip_fig_outdir in chip_fig_outdirs:
