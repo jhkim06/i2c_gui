@@ -140,6 +140,7 @@ class i2c_connection():
                      do_prepare_ws_testing: bool = False,
                      power_mode: str = "high",
                      rail_monitor=None,
+                     max_consecutive_scan_failures: int | None = None,
                      ):
 
         for chip_address, chip_name, ws_address in zip(self.chip_addresses, self.chip_names, self.ws_addresses):
@@ -150,10 +151,10 @@ class i2c_connection():
             if( do_basic_peripheral_register_check ): self.basic_peripheral_register_check(chip_address, chip)
             if( do_set_chip_peripherals ): self.set_chip_peripherals(chip_address, chip)
             if( do_disable_all_pixels ): self.disable_all_pixels(chip_address, chip, power_mode=power_mode)
-            if( do_auto_calibration ): self.auto_calibration(chip_address, chip_name, chip, rail_monitor=rail_monitor)
+            if( do_auto_calibration ): self.auto_calibration(chip_address, chip_name, chip, rail_monitor=rail_monitor, max_consecutive_scan_failures=max_consecutive_scan_failures)
             if ( do_disable_and_calibration ):
                 self.disable_all_pixels(chip_address, chip, power_mode=power_mode)
-                self.auto_calibration(chip_address, chip_name, chip, rail_monitor=rail_monitor)
+                self.auto_calibration(chip_address, chip_name, chip, rail_monitor=rail_monitor, max_consecutive_scan_failures=max_consecutive_scan_failures)
             if( do_prepare_ws_testing ): self.prepare_ws_testing(chip_address, ws_address, chip)
 
     def __del__(self):
@@ -219,6 +220,7 @@ class i2c_connection():
 
         # Wait for the calibration to be done correctly
         retry_counter = 0
+        scan_timed_out = False
         chip.read_decoded_value("ETROC2", "Pixel Status", "ScanDone")
         while chip.get_decoded_value("ETROC2", "Pixel Status", "ScanDone") != 1:
             time.sleep(0.01)
@@ -226,6 +228,7 @@ class i2c_connection():
             retry_counter += 1
             if retry_counter == 5 and chip.get_decoded_value("ETROC2", "Pixel Status", "ScanDone") != 1:
                 print(f"Retry counter reaches at 5! // Auto_Calibration Scan has failed for row {row}, col {col}!!")
+                scan_timed_out = True
                 break
 
         chip.read_all_block("ETROC2", "Pixel Status")
@@ -263,6 +266,8 @@ class i2c_connection():
         chip.write_all_block("ETROC2", "Pixel Config")
 
         if(verbose): print(f"Auto calibration done (enTDC=0 + DAC=1023) for pixel ({row},{col}) on chip: {hex(chip_address)}")
+
+        return scan_timed_out
 
     #--------------------------------------------------------------------------#
     def config_TDC_window_ranges_in_memory(self, chip: i2c_gui2.ETROC2_Chip, window_dict: dict = None):
@@ -620,7 +625,11 @@ class i2c_connection():
 
     #--------------------------------------------------------------------------#
     # Function 4
-    def auto_calibration(self, chip_address, chip_name, chip: i2c_gui2.ETROC2_Chip = None, ver_on: bool = False, rail_monitor=None):
+    def auto_calibration(self, chip_address, chip_name, chip: i2c_gui2.ETROC2_Chip = None, ver_on: bool = False,
+                         rail_monitor=None, max_consecutive_scan_failures: int | None = None):
+
+        if max_consecutive_scan_failures is not None and max_consecutive_scan_failures < 1:
+            raise ValueError("max_consecutive_scan_failures must be positive")
 
         if(chip == None):
             chip: i2c_gui2.ETROC2_Chip = self.get_chip_i2c_connection(chip_address)
@@ -636,9 +645,21 @@ class i2c_connection():
             bl_nw_dict.update(rail_sample_time=[], rail_meas_voltage_V=[], rail_meas_current_A=[], rail_measurement_error=[])
 
         # Loop for threshold calibration
+        consecutive_scan_failures = 0
         for row in tqdm(range(16), desc="Calibrating row", position=0):
             for col in range(16):
-                self.auto_cal_single_pixel(chip_address=chip_address, row=row, col=col, bl_nw_output=bl_nw_dict, chip=chip, verbose=ver_on, rail_monitor=rail_monitor)
+                scan_timed_out = self.auto_cal_single_pixel(
+                    chip_address=chip_address, row=row, col=col, bl_nw_output=bl_nw_dict,
+                    chip=chip, verbose=ver_on, rail_monitor=rail_monitor,
+                )
+                consecutive_scan_failures = consecutive_scan_failures + 1 if scan_timed_out else 0
+                if (max_consecutive_scan_failures is not None
+                        and consecutive_scan_failures >= max_consecutive_scan_failures):
+                    raise RuntimeError(
+                        f"Auto calibration stopped for chip {hex(chip_address)} after "
+                        f"{consecutive_scan_failures} consecutive ScanDone timeouts "
+                        f"(last pixel: row {row}, col {col}); partial results were not saved"
+                    )
 
         bl_nw_df = pd.DataFrame(data = bl_nw_dict)
         bl_nw_df['chip_name'] = chip_name

@@ -18,6 +18,11 @@ parser = argparse.ArgumentParser(description="ETROC calibration script")
 parser.add_argument("--chip_name", type=str, default="test", help="Name of the chip")
 parser.add_argument("--save_notes", type=str, default="", help="Extra notes for saving")
 parser.add_argument("--measure-1v2", action="store_true", help="Record Keysight CH1 measured voltage/current for each calibrated pixel")
+parser.add_argument(
+    "--stop-after-10-scan-failures",
+    action="store_true",
+    help="Stop auto-calibration after 10 consecutive pixels whose ScanDone remains unset after five retries; do not save partial results",
+)
 parser.add_argument("--psu-device", type=str, help="USBTMC path for the E36312A (auto-detected if omitted)")
 parser.add_argument(
     "--no-show-plots",
@@ -93,6 +98,7 @@ i2c_conn.config_chips(
     do_prepare_ws_testing=False,
     power_mode=args.power_mode,
     rail_monitor=rail_monitor,
+    max_consecutive_scan_failures=10 if args.stop_after_10_scan_failures else None,
 )
 
 ### Save BL and NW
