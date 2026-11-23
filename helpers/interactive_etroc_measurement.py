@@ -121,8 +121,9 @@ class EtrocController:
             sys.executable, str(HELPERS_DIR / "i2c_test_with_rpi.py"),
             "--chip_name", metadata.sample_name,
             "--save_notes", metadata.notes(bv_contacted=bv_contacted),
-            "--measure-1v2", "--psu-device", self.psu_device,
-            "--stop-after-10-scan-failures", "--no-show-plots",
+            #"--measure-1v2", "--psu-device", self.psu_device,
+            "--stop-after-10-scan-failures", 
+            #"--no-show-plots",
         ]
         print("Starting ETROC auto-calibration")
         return subprocess.run(command, cwd=HELPERS_DIR, check=False).returncode == 0
