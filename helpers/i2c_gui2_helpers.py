@@ -959,7 +959,8 @@ class i2c_connection():
 
 
     #--------------------------------------------------------------------------#
-    def make_BL_NW_2D_maps(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp):
+    def make_BL_NW_2D_maps(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp,
+                           plot_footer_metadata: str = ""):
 
         from mpl_toolkits.axes_grid1 import make_axes_locatable
         import matplotlib.pyplot as plt
@@ -1009,14 +1010,19 @@ class i2c_connection():
                     ax0.text(col,row, bl_value, c=bl_text_color, size=10, rotation=45, fontweight="bold", ha="center", va="center")
                     ax1.text(col,row, nw_value, c=nw_text_color, size=11, rotation=45, fontweight="bold", ha="center", va="center")
 
-            plt.tight_layout()
+            if plot_footer_metadata:
+                fig.text(0.5, 0.02, plot_footer_metadata, ha="center", va="bottom", fontsize=14)
+                fig.tight_layout(rect=(0, 0.065, 1, 1))
+            else:
+                plt.tight_layout()
             plot_path = save_path / f'{given_chip_name}_BL_NW_2D_map_{timestamp}.png'
             fig.savefig(plot_path)
         print(f"Saved BL/NW map: {plot_path}", flush=True)
         return plot_path
 
 
-    def make_BL_NW_1D_hists(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp):
+    def make_BL_NW_1D_hists(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp,
+                            plot_footer_metadata: str = ""):
         import hist
         import matplotlib.pyplot as plt
         import mplhep as hep
@@ -1034,7 +1040,11 @@ class i2c_connection():
 
         draw_nw_1d(axes[1], input_df['noise_width'].to_numpy().flatten(), given_chip_name, note)
 
-        plt.tight_layout()
+        if plot_footer_metadata:
+            fig.text(0.5, 0.02, plot_footer_metadata, ha="center", va="bottom", fontsize=14)
+            fig.tight_layout(rect=(0, 0.065, 1, 1))
+        else:
+            plt.tight_layout()
         plot_path = save_path / f'{given_chip_name}_BL_NW_1D_hist_{timestamp}.png'
         fig.savefig(plot_path)
         return plot_path
@@ -1084,6 +1094,7 @@ class i2c_connection():
             hist_dir: str | Path | None = None,
             save_notes: str = "",
             preview_plots: bool = False,
+            plot_footer_metadata: str = "",
         ):
 
         import sqlite3
@@ -1124,13 +1135,15 @@ class i2c_connection():
 
             for fig_index, chip_fig_outdir in enumerate(chip_fig_outdirs):
                 ## Make BL and NW 2D map
-                map_path = self.make_BL_NW_2D_maps(pivot_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+                map_path = self.make_BL_NW_2D_maps(pivot_df, chip_name, save_notes, chip_fig_outdir, timestamp,
+                                                    plot_footer_metadata=plot_footer_metadata)
                 log_unsynced_plot(map_path, save_mother_path)
                 if preview_plots and fig_index == 0:
                     preview_paths.append(map_path)
 
                 ## Make BL and NW 1D hist
-                hist_path = self.make_BL_NW_1D_hists(current_df, chip_name, save_notes, chip_fig_outdir, timestamp)
+                hist_path = self.make_BL_NW_1D_hists(current_df, chip_name, save_notes, chip_fig_outdir, timestamp,
+                                                      plot_footer_metadata=plot_footer_metadata)
                 log_unsynced_plot(hist_path, save_mother_path)
 
                 if {'rail_meas_voltage_V', 'rail_meas_current_A'}.issubset(current_df.columns):

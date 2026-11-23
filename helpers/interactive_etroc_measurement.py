@@ -32,11 +32,8 @@ class SessionMetadata:
     probe_trial: int
     bv_trial: int = 0
 
-    def notes(self, *, bv_contacted: bool, iv_scan: bool = False) -> str:
-        if iv_scan:
-            stage = "BV tip contacted; IV bias sweep"
-        else:
-            stage = "BV tip contacted; BV=0 V" if bv_contacted else "Probe only; BV tip not contacted"
+    def plot_footer(self, *, bv_contacted: bool) -> str:
+        stage = "BV tip contacted; BV=0 V" if bv_contacted else "Probe only; BV tip not contacted"
         return (f"Operator: {self.operator} | {self.sample_type} | "
                 f"Probe trial: {self.probe_trial} | BV trial: {self.bv_trial} | {stage}")
 
@@ -120,7 +117,7 @@ class EtrocController:
         command = [
             sys.executable, str(HELPERS_DIR / "i2c_test_with_rpi.py"),
             "--chip_name", metadata.sample_name,
-            "--save_notes", metadata.notes(bv_contacted=bv_contacted),
+            "--plot-footer-metadata", metadata.plot_footer(bv_contacted=bv_contacted),
             #"--measure-1v2", "--psu-device", self.psu_device,
             "--stop-after-10-scan-failures", 
             #"--no-show-plots",
@@ -133,7 +130,6 @@ class EtrocController:
             sys.executable, str(HELPERS_DIR / "smu_etroc_calibration_loop.py"),
             "--config", str(self.iv_config),
             "--chip-name", metadata.sample_name,
-            "--save-notes", metadata.notes(bv_contacted=True, iv_scan=True),
         ]
         print(f"Starting IV scan using {self.iv_config}")
         return subprocess.run(command, cwd=HELPERS_DIR, check=False).returncode == 0

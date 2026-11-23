@@ -16,6 +16,10 @@ For each experiment step:
      and optionally save per-step calibration logs when requested.
   6. Draw an IV curve plot from the pre-calibration currents after the voltage scan is done.
 
+The saved final IV plot opens in a nonblocking X11 window when a display is
+available and the SMU output-off command succeeded. Use --no-show-plots to
+save without opening a window.
+
 Recommended JSON config format:
   {
     "chip_name": "test",
@@ -770,6 +774,29 @@ def plot_iv_curve(
     return plot_path
 
 
+def show_iv_plot_preview(plot_path: Path | None, *, no_show_plots: bool,
+                         output_off_succeeded: bool) -> None:
+    """Open the saved IV PNG only after a successful SMU output-off command."""
+    if plot_path is None or no_show_plots:
+        return
+    if not output_off_succeeded:
+        print("IV plot saved, but window skipped because the SMU output-off command did not succeed.")
+        return
+    if not (os.environ.get("DISPLAY") or os.environ.get("TMUX")):
+        print("No graphical display is available; saved the IV plot without opening a window.")
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, str(HELPERS_DIR / "show_png_x11.py"), str(plot_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        print(f"Opening final IV plot preview: {plot_path}")
+    except OSError as exc:
+        print(f"Could not start IV plot window: {exc}", file=sys.stderr)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Loop optional SMU bias/current recording around ETROC auto-calibration"
@@ -806,6 +833,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-etroc-check", action="store_true", help="Disable ETROC2 I2C connection check before each voltage step")
     parser.add_argument("--continue-on-error", action="store_true", help="Continue scan even if calibration script fails")
     parser.add_argument("--save-logs", action="store_true", help="Save per-step calibration stdout logs under output-dir. Default/config: false")
+    parser.add_argument("--no-show-plots", action="store_true", help="Do not open the saved final IV plot in an X11 window")
     parser.add_argument("--leave-output-on", action="store_true", help="Do not turn SMU output off at the end. Not recommended.")
     parser.add_argument("--no-smu", action="store_true", help="Force no-SMU mode: run calibration without connecting to/applying Keithley bias")
     parser.add_argument("--require-smu", action="store_true", help="Fail if the selected SMU is not connected instead of falling back to no-SMU mode")
@@ -927,6 +955,7 @@ def main() -> int:
     smu = None
     smu_idn = ""
     smu_note = ""
+    output_off_succeeded = False
 
     if no_smu_requested:
         smu_note = "No-SMU mode requested; Keithley connection skipped."
@@ -1219,10 +1248,12 @@ def main() -> int:
                 print("Turning SMU output OFF")
                 try:
                     smu.output_off()
+                    output_off_succeeded = True
                 except Exception as exc:  # noqa: BLE001
                     print(f"Warning: failed to turn output off: {exc}", file=sys.stderr)
             smu.close()
 
+    preview_path: Path | None = None
     if iv_sqlite_path is not None:
         if iv_plot_paths:
             plot_rows = load_iv_rows_sqlite(iv_sqlite_path, iv_stamp)
@@ -1230,12 +1261,16 @@ def main() -> int:
                 saved_plot_path = plot_iv_curve(plot_rows, iv_plot_path, chip_name=chip_name, save_notes=save_notes, sweep=iv_plot_sweep)
                 if saved_plot_path is not None:
                     log_unsynced_plot(saved_plot_path, output_dir)
+                    if preview_path is None:
+                        preview_path = saved_plot_path
             print(f"Final IV plots (iv_plot_sweep={iv_plot_sweep}):")
             for iv_plot_path in iv_plot_paths:
                 print(f"  {iv_plot_path}")
         print(f"Final IV SQLite: {iv_sqlite_path}")
     else:
         print("No SMU was used; no IV SQLite or plot written.")
+    show_iv_plot_preview(preview_path, no_show_plots=args.no_show_plots,
+                         output_off_succeeded=output_off_succeeded)
     print("Done")
     return exit_code
 

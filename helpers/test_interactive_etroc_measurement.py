@@ -76,21 +76,29 @@ class WorkflowTests(unittest.TestCase):
             run.assert_called_with(["i2cdetect", "-y", "1"], capture_output=True,
                                    text=True, timeout=10, check=False)
 
-    def test_script_arguments_include_metadata_and_iv_config(self) -> None:
+    def test_script_arguments_use_separate_plot_footer(self) -> None:
         controller = EtrocController("/dev/usbtmc0", Path("/tmp/iv.json"))
         metadata = SessionMetadata("Alice", "Hybrid", "H1", 2, 1)
         with patch("interactive_etroc_measurement.subprocess.run") as run:
             run.return_value.returncode = 0
             self.assertTrue(controller.calibrate(metadata, bv_contacted=True))
             cal_command = run.call_args.args[0]
-            self.assertIn("--measure-1v2", cal_command)
             self.assertIn("--stop-after-10-scan-failures", cal_command)
-            self.assertIn("BV=0 V", cal_command[cal_command.index("--save_notes") + 1])
+            self.assertEqual(cal_command[cal_command.index("--chip_name") + 1], "H1")
+            self.assertNotIn("--save_notes", cal_command)
+            footer = cal_command[cal_command.index("--plot-footer-metadata") + 1]
+            self.assertIn("Operator: Alice | Hybrid | Probe trial: 2 | BV trial: 1", footer)
+            self.assertIn("BV=0 V", footer)
+            self.assertTrue(controller.calibrate(metadata, bv_contacted=False))
+            probe_command = run.call_args.args[0]
+            probe_footer = probe_command[probe_command.index("--plot-footer-metadata") + 1]
+            self.assertIn("Probe only; BV tip not contacted", probe_footer)
+            self.assertNotIn("BV=0 V", probe_footer)
             self.assertTrue(controller.iv_scan(metadata))
             iv_command = run.call_args.args[0]
             self.assertEqual(iv_command[iv_command.index("--config") + 1], "/tmp/iv.json")
-            self.assertIn("IV bias sweep", iv_command[iv_command.index("--save-notes") + 1])
-            self.assertNotIn("BV=0 V", iv_command[iv_command.index("--save-notes") + 1])
+            self.assertEqual(iv_command[iv_command.index("--chip-name") + 1], "H1")
+            self.assertNotIn("--save-notes", iv_command)
 
     def test_psu_off_disables_and_checks_all_three_channels(self) -> None:
         with patch("interactive_etroc_measurement.USBTMCInstrument") as instrument_class:

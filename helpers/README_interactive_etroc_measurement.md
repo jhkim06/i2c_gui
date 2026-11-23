@@ -36,16 +36,17 @@ during contact changes and on exit; it turns on only CH1/CH2 after contact.
   and waits for confirmation. BV-tip only then restores power/checks I²C and
   returns to the probe menu; both returns to probe contact with power off.
 
-Auto-calibration calls `i2c_test_with_rpi.py` with per-pixel PSU readback and
-the optional 10-consecutive-ScanDone-timeout cutoff enabled. Its plots are saved
-but are not opened over X11. Notes/plot titles include operator, sample type,
-contact trial, and whether the BV tip is contacted. BV-menu calibration is
-labelled `BV=0 V`.
-Before each such calibration the operator must confirm that the Keithley bias
-output is off and BV is 0 V; otherwise that calibration is skipped.
+Auto-calibration calls `i2c_test_with_rpi.py` with the optional
+10-consecutive-ScanDone-timeout cutoff enabled. It passes operator, sample type,
+contact trials, and contact state through `--plot-footer-metadata`, placing that
+text once at the bottom center of each BL/NW 2D and 1D figure. It does not pass
+`--save_notes`; the calibration script retains its existing notes, plot-title,
+and SQLite behavior. Before BV-menu calibration the operator must confirm that
+the Keithley bias output is off and BV is 0 V; otherwise calibration is skipped.
 
 IV calls `smu_etroc_calibration_loop.py` with
 `iv_configs/experiment_smu_voltage_scan_keithley_2400.json` **unchanged**.
+The workflow does not pass `--save-notes` to the IV script.
 This config also performs ETROC auto-calibration at **−100 V**. The existing IV
 script handles bias output shutdown; if it fails, this wrapper stops and asks
 the operator to verify that the Keithley output is off before continuing.

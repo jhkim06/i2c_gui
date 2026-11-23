@@ -17,6 +17,8 @@ parser = argparse.ArgumentParser(description="ETROC calibration script")
 
 parser.add_argument("--chip_name", type=str, default="test", help="Name of the chip")
 parser.add_argument("--save_notes", type=str, default="", help="Extra notes for saving")
+parser.add_argument("--plot-footer-metadata", type=str, default="",
+                    help="Optional text shown once at the bottom center of each BL/NW figure; independent of --save_notes")
 parser.add_argument("--measure-1v2", action="store_true", help="Record Keysight CH1 measured voltage/current for each calibrated pixel")
 parser.add_argument(
     "--stop-after-10-scan-failures",
@@ -105,7 +107,9 @@ i2c_conn.config_chips(
 now = datetime.datetime.now().isoformat(sep=' ', timespec='seconds')
 full_notes = f"{args.save_notes}" if args.save_notes else now
 
-preview_paths = i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes, preview_plots=not args.no_show_plots)
+preview_paths = i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes,
+                                       preview_plots=not args.no_show_plots,
+                                       plot_footer_metadata=args.plot_footer_metadata)
 
 if not args.no_show_plots:
     if os.environ.get("DISPLAY") or os.environ.get("TMUX"):
