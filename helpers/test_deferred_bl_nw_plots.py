@@ -7,6 +7,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,7 +17,7 @@ import pandas as pd
 
 from i2c_gui2_helpers import i2c_connection
 from render_deferred_bl_nw_plots import render_job
-from smu_etroc_calibration_loop import run_calibration
+from smu_etroc_calibration_loop import run_calibration, start_deferred_bl_nw_jobs
 
 
 def fake_scan(baseline: int) -> pd.DataFrame:
@@ -52,7 +53,7 @@ class DeferredBLNWTests(unittest.TestCase):
 
                 with patch.object(i2c_connection, "make_BL_NW_2D_maps", return_value=root / "map.png") as map_plot, \
                      patch.object(i2c_connection, "make_BL_NW_1D_hists", return_value=root / "hist.png") as hist_plot, \
-                     patch("render_deferred_bl_nw_plots.log_unsynced_plot") as sync:
+                     patch("i2c_gui2_helpers.log_unsynced_plot") as sync:
                     render_job(jobs[1])
                 self.assertEqual(map_plot.call_args.args[0]["baseline"].to_numpy().min(), 500)
                 self.assertEqual(hist_plot.call_args.args[0]["baseline"].min(), 500)
@@ -114,6 +115,41 @@ class DeferredBLNWTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "do not match"):
                     render_job(job)
                 self.assertTrue(job.exists())
+
+    def test_background_launch_does_not_wait_or_inherit_scan_pipe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            job = Path(temp) / "scan.json"
+            job.write_text("{}")
+            with patch("smu_etroc_calibration_loop.subprocess.Popen") as popen:
+                popen.return_value.pid = 1234
+                self.assertEqual(start_deferred_bl_nw_jobs([job]), [])
+            kwargs = popen.call_args.kwargs
+            self.assertTrue(kwargs["start_new_session"])
+            self.assertEqual(kwargs["env"]["MPLBACKEND"], "Agg")
+            self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+            self.assertNotEqual(kwargs["stdout"], subprocess.PIPE)
+            popen.return_value.wait.assert_not_called()
+            self.assertTrue(job.exists())
+
+    def test_failed_background_launch_keeps_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            job = Path(temp) / "scan.json"
+            job.write_text("{}")
+            with patch("smu_etroc_calibration_loop.subprocess.Popen", side_effect=OSError("launch failed")), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(start_deferred_bl_nw_jobs([job]), [job])
+            self.assertTrue(job.exists())
+
+    def test_missing_renderer_keeps_job_without_spawning(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            job = Path(temp) / "scan.json"
+            job.write_text("{}")
+            with patch("smu_etroc_calibration_loop.Path.is_file", return_value=False), \
+                 patch("smu_etroc_calibration_loop.subprocess.Popen") as popen, \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(start_deferred_bl_nw_jobs([job]), [job])
+            popen.assert_not_called()
+            self.assertTrue(job.exists())
 
 
 if __name__ == "__main__":

@@ -4,16 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import sqlite3
 from pathlib import Path
 
-import pandas as pd
-
-from i2c_gui2_helpers import i2c_connection, log_unsynced_plot
-
 
 def render_job(job_path: Path) -> list[Path]:
+    import pandas as pd
+    from i2c_gui2_helpers import i2c_connection, log_unsynced_plot
+
     job = json.loads(job_path.read_text(encoding="utf-8"))
     sqlite_path = Path(job["sqlite_path"])
     with sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True) as connection:
@@ -55,8 +55,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("job", type=Path, help="Deferred BL/NW job JSON")
     args = parser.parse_args()
-    for path in render_job(args.job):
-        print(f"Saved deferred BL/NW plot: {path}")
+    # Only one renderer loads Matplotlib at a time on a memory-limited Pi.
+    with (args.job.parent / ".render.lock").open("a") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        if not args.job.exists():
+            print(f"Deferred BL/NW job already completed: {args.job}")
+            return 0
+        for path in render_job(args.job):
+            print(f"Saved deferred BL/NW plot: {path}")
     return 0
 
 

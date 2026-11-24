@@ -11,8 +11,8 @@ For each experiment step:
   2. Enable output.
   3. Record current before calibration.
   4. Run i2c_test_with_rpi.py and wait until it finishes.
-     By default it saves BL/NW SQLite rows and defers PNG rendering until the
-     scan is finished and SMU output-off has succeeded.
+     By default it saves BL/NW SQLite rows; after SMU output-off at that step,
+     a detached worker renders PNGs while the voltage sweep continues.
   5. Append pre-calibration IV measurements to cumulative IVHistory.sqlite,
      and optionally save per-step calibration logs when requested.
   6. Draw an IV curve plot from the pre-calibration currents after the voltage scan is done.
@@ -473,6 +473,35 @@ def run_calibration(
 
     output_text = b"".join(output_chunks).decode(errors="replace")
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout=output_text, stderr="")
+
+
+def start_deferred_bl_nw_jobs(jobs: list[Path]) -> list[Path]:
+    """Launch plot-only workers without sharing the scan's terminal pipe."""
+    renderer = Path(__file__).with_name("render_deferred_bl_nw_plots.py")
+    if not renderer.is_file():
+        print(f"Background BL/NW renderer is missing; jobs retained: {renderer}", file=sys.stderr)
+        return jobs
+    remaining = []
+    for job_path in jobs:
+        log_path = job_path.with_suffix(".log")
+        try:
+            with log_path.open("ab") as log_file:
+                process = subprocess.Popen(
+                    [sys.executable, str(renderer), str(job_path)],
+                    cwd=str(renderer.parent),
+                    env={**os.environ, "MPLBACKEND": "Agg"},
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+        except OSError as exc:
+            print(f"Could not launch background BL/NW plot; job retained: {job_path}: {exc}",
+                  file=sys.stderr)
+            remaining.append(job_path)
+        else:
+            print(f"Background BL/NW plot started (PID {process.pid}); job={job_path}; log={log_path}")
+    return remaining
 
 
 def safe_return_to_zero(
@@ -1256,6 +1285,8 @@ def main() -> int:
             if smu is not None:
                 print("Turning output OFF before next step")
                 smu.output_off()
+            if deferred_bl_nw_jobs:
+                deferred_bl_nw_jobs = start_deferred_bl_nw_jobs(deferred_bl_nw_jobs)
 
             if not stop_scan and step_index != total_steps and cycle_delay > 0:
                 print(f"Waiting {cycle_delay:g} s before next step")
@@ -1281,13 +1312,9 @@ def main() -> int:
                 print("Deferred BL/NW jobs remain queued: SMU output was not confirmed OFF.", file=sys.stderr)
                 exit_code = exit_code or 4
             else:
-                renderer = Path(__file__).with_name("render_deferred_bl_nw_plots.py")
-                for job_path in deferred_bl_nw_jobs:
-                    result = subprocess.run([sys.executable, str(renderer), str(job_path)],
-                                            cwd=str(renderer.parent), check=False)
-                    if result.returncode != 0:
-                        print(f"Deferred BL/NW plot failed; job retained for retry: {job_path}", file=sys.stderr)
-                        exit_code = exit_code or 4
+                deferred_bl_nw_jobs = start_deferred_bl_nw_jobs(deferred_bl_nw_jobs)
+                if deferred_bl_nw_jobs:
+                    exit_code = exit_code or 4
 
     preview_path: Path | None = None
     if iv_sqlite_path is not None:
