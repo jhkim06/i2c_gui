@@ -23,7 +23,7 @@ save without opening a window.
 Recommended JSON config format:
   {
     "chip_name": "test",
-    "save_notes": "bias_scan",
+    "save_notes": "bias scan",
     "current_limit": 1e-4,
     "settle": 1.0,
     "cycle_delay": 0.0,
@@ -48,7 +48,7 @@ Use "smu_driver": "caen" and "smu_channel": 3 for CAEN NDT1470 CH3.
 For different current limit per voltage, use explicit steps:
   {
     "chip_name": "test",
-    "save_notes": "bias_scan",
+    "save_notes": "bias scan",
     "steps": [
       {"voltage": -2, "current_limit": 1e-4},
       {"voltage": -3, "current_limit": 1e-4},
@@ -138,6 +138,12 @@ SMU_DRIVER_ALIASES = {
 
 def voltage_tag(voltage: float) -> str:
     return f"{voltage:g}V".replace("-", "minus").replace("+", "plus").replace(".", "p")
+
+
+def calibration_plot_notes(base_notes: str, voltage: float) -> str:
+    """Human-readable BL/NW note; file timestamps are handled separately."""
+    label = " ".join(base_notes.replace("_", " ").split())
+    return " ".join(part for part in (label, f"BV={voltage:g}V") if part)
 
 
 def timestamp_for_file() -> str:
@@ -377,6 +383,7 @@ def run_calibration(
     i2c_script: Path,
     chip_name: str,
     save_notes: str,
+    plot_footer_metadata: str,
     log_path: Path | None,
     output_dir: Path,
     timeout_s: float | None,
@@ -390,6 +397,8 @@ def run_calibration(
         save_notes,
         "--no-show-plots",
     ]
+    if plot_footer_metadata:
+        cmd.extend(["--plot-footer-metadata", plot_footer_metadata])
 
     start_line = f"$ {' '.join(cmd)}\n\n"
     log_fh = None
@@ -822,7 +831,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-voltage-wait", action="store_true", help="Do not wait for drivers with VMON support to reach requested voltage before current read")
     parser.add_argument("--voltage-tolerance", type=float, default=None, help="Voltage tolerance for VMON wait [V]. Default/config: 1.0")
     parser.add_argument("--chip-name", default=None, help="chip_name argument passed to i2c_test_with_rpi.py")
-    parser.add_argument("--save-notes", default=None, help="Base save_notes string. Voltage/timestamp are appended automatically.")
+    parser.add_argument("--save-notes", default=None, help="Base BL/NW plot note; the bias voltage is appended as BV=<voltage>V.")
+    parser.add_argument("--plot-footer-metadata", default=None, help="Optional metadata shown once at the bottom of each BL/NW plot")
     parser.add_argument("--i2c-script", type=Path, default=None, help="Path to i2c_test_with_rpi.py")
     parser.add_argument("--output-dir", type=Path, default=None, help="Directory for SQLite output and optional per-step logs")
     parser.add_argument("--calibration-timeout", type=float, default=None, help="Optional timeout for each calibration run [s]")
@@ -864,6 +874,7 @@ def main() -> int:
     cycle_delay = float(cfg_value(config, "cycle_delay", args.cycle_delay, DEFAULT_CYCLE_DELAY))
     chip_name = str(cfg_value(config, "chip_name", args.chip_name, DEFAULT_CHIP_NAME))
     save_notes = str(cfg_value(config, "save_notes", args.save_notes, ""))
+    plot_footer_metadata = str(cfg_value(config, "plot_footer_metadata", args.plot_footer_metadata, ""))
     i2c_script = Path(cfg_value(config, "i2c_script", args.i2c_script, DEFAULT_I2C_SCRIPT))
     output_dir = Path(cfg_value(config, "output_dir", args.output_dir, configured_output_dir)).expanduser().resolve()
     calibration_timeout = cfg_value(config, "calibration_timeout", args.calibration_timeout, None)
@@ -1050,8 +1061,7 @@ def main() -> int:
 
             step_start = timestamp_iso()
             step_stamp = timestamp_for_file()
-            notes_parts = [p for p in [save_notes, f"V_{vtag}", step_stamp] if p]
-            step_notes = "_".join(notes_parts)
+            step_notes = calibration_plot_notes(save_notes, voltage)
             log_path = output_dir / f"calibration_V_{vtag}_{step_stamp}.log" if save_logs else None
 
             before_voltage = None
@@ -1121,6 +1131,7 @@ def main() -> int:
                         i2c_script=i2c_script,
                         chip_name=chip_name,
                         save_notes=step_notes,
+                        plot_footer_metadata=plot_footer_metadata,
                         log_path=log_path,
                         output_dir=output_dir,
                         timeout_s=calibration_timeout,

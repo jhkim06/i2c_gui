@@ -9,6 +9,7 @@ Keithley bias output and performs its existing shutdown sequence.
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
 import os
 import subprocess
 import sys
@@ -36,6 +37,11 @@ class SessionMetadata:
         stage = "BV tip contacted; BV=0 V" if bv_contacted else "Probe only; BV tip not contacted"
         return (f"Operator: {self.operator} | {self.sample_type} | "
                 f"Probe trial: {self.probe_trial} | BV trial: {self.bv_trial} | {stage}")
+
+    def iv_plot_footer(self) -> str:
+        return (f"Operator: {self.operator} | {self.sample_type} | "
+                f"Probe trial: {self.probe_trial} | BV trial: {self.bv_trial} | "
+                "BV tip contacted; bias sweep")
 
 
 class PowerSupplyController:
@@ -88,11 +94,18 @@ class PowerSupplyController:
 class EtrocController:
     """Run the existing ETROC and IV scripts; do not duplicate their scans."""
 
-    def __init__(self, psu_device: str, iv_config: Path, i2c_bus: int = 1, i2c_address: int = 0x60) -> None:
+    def __init__(self, psu_device: str, iv_config: Path, i2c_bus: int = 1, i2c_address: int = 0x60,
+                 script_runner: Callable[[list[str], Path], int] | None = None) -> None:
         self.psu_device = psu_device
         self.iv_config = iv_config
         self.i2c_bus = i2c_bus
         self.i2c_address = i2c_address
+        self.script_runner = script_runner
+
+    def run_script(self, command: list[str]) -> bool:
+        if self.script_runner is not None:
+            return self.script_runner(command, HELPERS_DIR) == 0
+        return subprocess.run(command, cwd=HELPERS_DIR, check=False).returncode == 0
 
     def detected(self) -> bool:
         result = subprocess.run(
@@ -123,24 +136,36 @@ class EtrocController:
             #"--no-show-plots",
         ]
         print("Starting ETROC auto-calibration")
-        return subprocess.run(command, cwd=HELPERS_DIR, check=False).returncode == 0
+        return self.run_script(command)
 
     def iv_scan(self, metadata: SessionMetadata) -> bool:
         command = [
             sys.executable, str(HELPERS_DIR / "smu_etroc_calibration_loop.py"),
             "--config", str(self.iv_config),
             "--chip-name", metadata.sample_name,
+            "--plot-footer-metadata", metadata.iv_plot_footer(),
         ]
         print(f"Starting IV scan using {self.iv_config}")
-        return subprocess.run(command, cwd=HELPERS_DIR, check=False).returncode == 0
+        return self.run_script(command)
 
 
 class MeasurementWorkflow:
     def __init__(self, psu: PowerSupplyController, etroc: EtrocController,
-                 ask: Callable[[str], str] = input) -> None:
+                 ask: Callable[[str], str] = input, ui=None) -> None:
         self.psu = psu
         self.etroc = etroc
         self.ask = ask
+        self.ui = ui
+
+    def status(self, **values) -> None:
+        if self.ui is not None:
+            self.ui.update(**values)
+
+    def menu(self, text: str) -> None:
+        if self.ui is not None:
+            self.ui.set_menu(text)
+        else:
+            print(text)
 
     def choice(self, prompt: str, allowed: tuple[str, ...]) -> str:
         while True:
@@ -156,59 +181,79 @@ class MeasurementWorkflow:
                 return value
             print("A value is required.")
 
-    def contact(self, label: str) -> bool:
+    def contact(self, label: str, *, bv_tip: bool = False) -> bool:
         self.psu.off()
+        self.status(psu="OFF", i2c="NOT CHECKED", **({"bv": False} if bv_tip else {"probe": False, "bv": False}))
         print(f"{label}: adjust contact with the PSU OFF.")
+        self.menu("[d] Contact done   [q] Return")
         return self.choice("Enter d when contact is done, or q to go back: ", ("d", "q")) == "d"
 
     def energize_and_check(self) -> bool:
         self.psu.on()
+        self.status(psu="ON", i2c="CHECKING")
         if self.etroc.detected():
+            self.status(i2c="DETECTED")
             return True
         self.psu.off()
+        self.status(psu="OFF", i2c="NOT DETECTED")
         print("ETROC not detected; outputs are OFF. Adjust contact and retry.")
         return False
 
-    def uncontact(self, label: str) -> None:
+    def uncontact(self, label: str, *, probe: bool = False) -> None:
         self.psu.off()
+        self.status(psu="OFF", i2c="NOT CHECKED")
+        self.menu("[d] Confirm contact removed")
         self.choice(f"Remove {label}, then enter d to confirm: ", ("d",))
+        self.status(**({"probe": False, "bv": False} if probe else {"bv": False}))
 
     def sample(self, operator: str, sample_type: str, sample_name: str) -> None:
         probe_trial = 0
         bv_trial = 0
         stage = "probe_contact"
+        self.status(sample_name=sample_name, probe=False, bv=False, probe_trial=0,
+                    bv_trial=0, i2c="NOT CHECKED")
         while True:
             if stage == "probe_contact":
                 probe_trial += 1
                 bv_trial = 0
+                self.status(phase="Probe-card contact", probe_trial=probe_trial, bv_trial=0)
                 if not self.contact(f"Probe-card contact trial {probe_trial} for {sample_name}"):
                     return  # Quit current sample; ask for a new name.
+                self.status(probe=True)
                 if self.energize_and_check():
                     stage = "probe_menu"
             elif stage == "probe_menu":
-                print("Probe menu: [a] Auto-calibration  [b] Contact BV tip  [u] Un-contact probe")
+                self.status(phase="Probe menu")
+                self.menu("Probe: [a] Auto-calibration  [b] Contact BV tip  [u] Un-contact probe")
                 action = self.choice("> ", ("a", "b", "u"))
                 metadata = SessionMetadata(operator, sample_type, sample_name, probe_trial)
                 if action == "a":
-                    if not self.etroc.calibrate(metadata, bv_contacted=False):
+                    self.status(phase="Auto-calibration running")
+                    success = self.etroc.calibrate(metadata, bv_contacted=False)
+                    self.status(phase="Probe menu")
+                    if not success:
                         print("Auto-calibration failed; review output before trying again.")
                 elif action == "b":
                     stage = "bv_contact"
                 else:
-                    self.uncontact("the probe card")
+                    self.uncontact("the probe card", probe=True)
                     stage = "probe_contact"
             elif stage == "bv_contact":
                 bv_trial += 1
-                if not self.contact(f"BV-tip contact trial {bv_trial}"):
+                self.status(phase="BV-tip contact", bv_trial=bv_trial)
+                if not self.contact(f"BV-tip contact trial {bv_trial}", bv_tip=True):
                     if self.energize_and_check():
                         stage = "probe_menu"
                     else:
                         stage = "probe_contact"
-                elif self.energize_and_check():
-                    stage = "bv_menu"
+                else:
+                    self.status(bv=True)
+                    if self.energize_and_check():
+                        stage = "bv_menu"
             elif stage == "bv_menu":
-                print("BV menu: [a] Auto-calibration  [i] IV scan  "
-                      "[b] Un-contact BV tip  [u] Un-contact BV and probe")
+                self.status(phase="BV menu")
+                self.menu("BV: [a] Auto-calibration  [i] IV scan  "
+                          "[b] Un-contact BV tip  [u] Un-contact BV and probe")
                 action = self.choice("> ", ("a", "i", "b", "u"))
                 metadata = SessionMetadata(operator, sample_type, sample_name, probe_trial, bv_trial)
                 if action == "a":
@@ -216,11 +261,18 @@ class MeasurementWorkflow:
                                    ("y", "n")) != "y":
                         print("Calibration skipped; BV=0 V was not confirmed.")
                         continue
-                    if not self.etroc.calibrate(metadata, bv_contacted=True):
+                    self.status(phase="Auto-calibration running")
+                    success = self.etroc.calibrate(metadata, bv_contacted=True)
+                    self.status(phase="BV menu")
+                    if not success:
                         print("Auto-calibration failed; review output before trying again.")
                 elif action == "i":
-                    if not self.etroc.iv_scan(metadata):
+                    self.status(phase="IV scan running")
+                    success = self.etroc.iv_scan(metadata)
+                    self.status(phase="BV menu")
+                    if not success:
                         self.psu.off()
+                        self.status(psu="OFF")
                         raise RuntimeError("IV scan failed; verify the Keithley output is OFF before continuing")
                 elif action == "b":
                     self.uncontact("the BV tip")
@@ -229,18 +281,54 @@ class MeasurementWorkflow:
                     else:
                         stage = "probe_contact"
                 else:
-                    self.uncontact("the BV tip and probe card")
+                    self.uncontact("the BV tip and probe card", probe=True)
                     stage = "probe_contact"
 
     def run(self) -> None:
         operator = self.required("Operator name: ")
+        self.menu("[b] Bare ETROC   [h] Hybrid")
         sample_type = "Bare ETROC" if self.choice("[b] Bare ETROC or [h] Hybrid? ", ("b", "h")) == "b" else "Hybrid"
-        print("Enter a new sample name for each measurement, or q to exit.")
+        self.status(operator=operator, sample_type=sample_type, phase="Select sample")
+        self.menu("Enter a new sample name, or q to exit")
         while True:
             sample_name = self.required(f"New {sample_type} name (q to exit): ")
             if sample_name.lower() == "q":
                 return
             self.sample(operator, sample_type, sample_name)
+            self.status(sample_name="—", probe=False, bv=False, i2c="NOT CHECKED", phase="Select sample")
+            self.menu("Enter a new sample name, or q to exit")
+
+
+def run_measurement(args, ui=None) -> int:
+    """Run the existing hardware workflow with an optional terminal display."""
+    psu = None
+    exit_code = 0
+    try:
+        psu = PowerSupplyController(args.psu_device, presets={
+            1: (args.ch1_voltage, args.ch1_current_limit),
+            2: (args.ch2_voltage, args.ch2_current_limit),
+        })
+        etroc = EtrocController(psu.device, args.iv_config, args.i2c_bus, args.i2c_address,
+                                script_runner=ui.run_script if ui is not None else None)
+        MeasurementWorkflow(psu, etroc, ask=ui.ask if ui is not None else input, ui=ui).run()
+    except (KeyboardInterrupt, EOFError):
+        print("\nInterrupted; switching controlled PSU outputs OFF.")
+        exit_code = 130
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        exit_code = 1
+    finally:
+        if psu is not None:
+            try:
+                psu.off()
+                if ui is not None:
+                    ui.update(psu="OFF", i2c="NOT CHECKED", phase="Finished")
+            except Exception as exc:
+                print(f"ERROR: could not confirm PSU shutdown: {exc}", file=sys.stderr)
+                if ui is not None:
+                    ui.update(psu="UNKNOWN", phase="Shutdown warning")
+                exit_code = 2
+    return exit_code
 
 
 def main() -> int:
@@ -253,6 +341,7 @@ def main() -> int:
     parser.add_argument("--iv-config", type=Path, default=DEFAULT_IV_CONFIG)
     parser.add_argument("--i2c-bus", type=int, default=1)
     parser.add_argument("--i2c-address", type=lambda value: int(value, 0), default=0x60)
+    parser.add_argument("--plain", action="store_true", help="Use the original scrolling text prompts instead of the terminal UI")
     args = parser.parse_args()
     if not args.iv_config.is_file():
         parser.error(f"IV config not found: {args.iv_config}")
@@ -262,29 +351,22 @@ def main() -> int:
         if not os.environ.get(name):
             parser.error("Source helpers/setup_i2c_measurement_env.sh first")
 
-    psu = None
-    exit_code = 0
-    try:
-        psu = PowerSupplyController(args.psu_device, presets={
-            1: (args.ch1_voltage, args.ch1_current_limit),
-            2: (args.ch2_voltage, args.ch2_current_limit),
-        })
-        etroc = EtrocController(psu.device, args.iv_config, args.i2c_bus, args.i2c_address)
-        MeasurementWorkflow(psu, etroc).run()
-    except (KeyboardInterrupt, EOFError):
-        print("\nInterrupted; switching controlled PSU outputs OFF.")
-        exit_code = 130
-    except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        exit_code = 1
-    finally:
-        if psu is not None:
-            try:
-                psu.off()
-            except Exception as exc:
-                print(f"ERROR: could not confirm PSU shutdown: {exc}", file=sys.stderr)
-                exit_code = 2
-    return exit_code
+    if args.plain or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return run_measurement(args)
+
+    import curses
+    from measurement_tui import MeasurementTUI
+
+    def run_tui(screen) -> int:
+        ui = MeasurementTUI(screen)
+        with redirect_stdout(ui), redirect_stderr(ui):
+            exit_code = run_measurement(args, ui)
+            if exit_code:
+                ui.set_menu("Measurement stopped; review the messages above")
+                ui.ask("Press Enter to return to the shell: ")
+            return exit_code
+
+    return curses.wrapper(run_tui)
 
 
 if __name__ == "__main__":

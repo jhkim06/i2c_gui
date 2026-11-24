@@ -41,7 +41,33 @@ class FakeETROC:
         return True
 
 
+class FakeUI:
+    def __init__(self) -> None:
+        self.current: dict = {}
+        self.snapshots: list[dict] = []
+        self.menus: list[str] = []
+
+    def update(self, **values) -> None:
+        self.current.update(values)
+        self.snapshots.append(dict(self.current))
+
+    def set_menu(self, text: str) -> None:
+        self.menus.append(text)
+
+
 class WorkflowTests(unittest.TestCase):
+    def test_status_follows_contact_and_uncontact(self) -> None:
+        psu, etroc, ui = FakePSU(), FakeETROC(), FakeUI()
+        answers = iter(("Alice", "h", "H1", "d", "b", "d", "b", "d", "u", "d", "q", "q"))
+        MeasurementWorkflow(psu, etroc, lambda _: next(answers), ui=ui).run()
+        self.assertTrue(any(s.get("probe") is True and s.get("bv") is True and
+                            s.get("i2c") == "DETECTED" for s in ui.snapshots))
+        self.assertTrue(any(s.get("probe") is True and s.get("bv") is False and
+                            s.get("psu") == "OFF" for s in ui.snapshots))
+        self.assertTrue(any(s.get("probe") is False and s.get("bv") is False and
+                            s.get("psu") == "OFF" for s in ui.snapshots))
+        self.assertTrue(any("[i] IV scan" in menu for menu in ui.menus))
+
     def test_calibrations_iv_and_stepwise_uncontact(self) -> None:
         psu, etroc = FakePSU(), FakeETROC()
         answers = iter(("Alice", "h", "H1", "d", "a", "b", "d", "a", "y", "i", "b", "d", "u", "d", "q", "q"))
@@ -99,6 +125,10 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(iv_command[iv_command.index("--config") + 1], "/tmp/iv.json")
             self.assertEqual(iv_command[iv_command.index("--chip-name") + 1], "H1")
             self.assertNotIn("--save-notes", iv_command)
+            iv_footer = iv_command[iv_command.index("--plot-footer-metadata") + 1]
+            self.assertIn("Operator: Alice | Hybrid | Probe trial: 2 | BV trial: 1", iv_footer)
+            self.assertIn("bias sweep", iv_footer)
+            self.assertNotIn("BV=0 V", iv_footer)
 
     def test_psu_off_disables_and_checks_all_three_channels(self) -> None:
         with patch("interactive_etroc_measurement.USBTMCInstrument") as instrument_class:

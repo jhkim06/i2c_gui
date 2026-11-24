@@ -21,6 +21,15 @@ They are printed at startup. For a session-specific override, use for example
 `--ch1-current-limit 1.2`. The workflow turns **all three** PSU outputs off
 during contact changes and on exit; it turns on only CH1/CH2 after contact.
 
+In an interactive terminal, a text UI keeps the sample, probe/BV contact,
+PSU, and ETROC I²C status fixed at the top. **CONTACTED** and **DETECTED** are
+red. Calibration/IV messages scroll in the middle, and the current menu stays
+at the bottom. Child scans run with their output streamed into that message
+area; Ctrl-C is forwarded to the child, and the workflow waits for its shutdown
+before returning. Use `--plain` for the original scrolling prompts (also used
+automatically when stdin/stdout is not a terminal). The separate X11 plot
+windows still open outside the terminal UI when a display is available.
+
 ## Menus
 
 - Probe contact: PSU off, display trial number, wait for `d` (done) or `q`
@@ -45,8 +54,11 @@ and SQLite behavior. Before BV-menu calibration the operator must confirm that
 the Keithley bias output is off and BV is 0 V; otherwise calibration is skipped.
 
 IV calls `smu_etroc_calibration_loop.py` with
-`iv_configs/experiment_smu_voltage_scan_keithley_2400.json` **unchanged**.
-The workflow does not pass `--save-notes` to the IV script.
+`iv_configs/experiment_smu_voltage_scan_keithley_2400.json`.
+The workflow does not pass `--save-notes` to the IV script; the config supplies
+`Keithley 2400`. Each BL/NW plot title adds the step bias (for example,
+`Keithley 2400 BV=-100V`), while `--plot-footer-metadata` adds operator and
+contact information once at the bottom, identifying this run as a bias sweep.
 This config also performs ETROC auto-calibration at **−100 V**. The existing IV
 script handles bias output shutdown; if it fails, this wrapper stops and asks
 the operator to verify that the Keithley output is off before continuing.
