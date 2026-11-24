@@ -11,7 +11,8 @@ For each experiment step:
   2. Enable output.
   3. Record current before calibration.
   4. Run i2c_test_with_rpi.py and wait until it finishes.
-     That script saves baseline/noise-width SQLite results and plots.
+     By default it saves BL/NW SQLite rows and defers PNG rendering until the
+     scan is finished and SMU output-off has succeeded.
   5. Append pre-calibration IV measurements to cumulative IVHistory.sqlite,
      and optionally save per-step calibration logs when requested.
   6. Draw an IV curve plot from the pre-calibration currents after the voltage scan is done.
@@ -387,6 +388,7 @@ def run_calibration(
     log_path: Path | None,
     output_dir: Path,
     timeout_s: float | None,
+    defer_bl_nw_plots: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [
         python_exe,
@@ -397,6 +399,8 @@ def run_calibration(
         save_notes,
         "--no-show-plots",
     ]
+    if defer_bl_nw_plots:
+        cmd.append("--defer-bl-nw-plots")
     if plot_footer_metadata:
         cmd.extend(["--plot-footer-metadata", plot_footer_metadata])
 
@@ -844,6 +848,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--continue-on-error", action="store_true", help="Continue scan even if calibration script fails")
     parser.add_argument("--save-logs", action="store_true", help="Save per-step calibration stdout logs under output-dir. Default/config: false")
     parser.add_argument("--no-show-plots", action="store_true", help="Do not open the saved final IV plot in an X11 window")
+    parser.add_argument("--no-defer-bl-nw-plots", action="store_true",
+                        help="Wait for BL/NW PNGs during calibration instead of rendering them after the bias scan")
     parser.add_argument("--leave-output-on", action="store_true", help="Do not turn SMU output off at the end. Not recommended.")
     parser.add_argument("--no-smu", action="store_true", help="Force no-SMU mode: run calibration without connecting to/applying Keithley bias")
     parser.add_argument("--require-smu", action="store_true", help="Fail if the selected SMU is not connected instead of falling back to no-SMU mode")
@@ -967,6 +973,7 @@ def main() -> int:
     smu_idn = ""
     smu_note = ""
     output_off_succeeded = False
+    deferred_bl_nw_jobs: list[Path] = []
 
     if no_smu_requested:
         smu_note = "No-SMU mode requested; Keithley connection skipped."
@@ -1135,7 +1142,13 @@ def main() -> int:
                         log_path=log_path,
                         output_dir=output_dir,
                         timeout_s=calibration_timeout,
+                        defer_bl_nw_plots=not args.no_defer_bl_nw_plots,
                     )
+                    for line in proc.stdout.splitlines():
+                        if line.startswith("DEFERRED_BL_NW_JOB="):
+                            job_path = Path(line.partition("=")[2]).resolve()
+                            if job_path.parent == (output_dir / "deferred_bl_nw_plots").resolve():
+                                deferred_bl_nw_jobs.append(job_path)
                     calibration_returncode: int | str = proc.returncode
                     calibration_status = "ok" if proc.returncode == 0 else "failed"
                 except subprocess.TimeoutExpired as exc:
@@ -1263,6 +1276,18 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001
                     print(f"Warning: failed to turn output off: {exc}", file=sys.stderr)
             smu.close()
+        if deferred_bl_nw_jobs:
+            if smu is not None and (not output_off_succeeded or args.leave_output_on):
+                print("Deferred BL/NW jobs remain queued: SMU output was not confirmed OFF.", file=sys.stderr)
+                exit_code = exit_code or 4
+            else:
+                renderer = Path(__file__).with_name("render_deferred_bl_nw_plots.py")
+                for job_path in deferred_bl_nw_jobs:
+                    result = subprocess.run([sys.executable, str(renderer), str(job_path)],
+                                            cwd=str(renderer.parent), check=False)
+                    if result.returncode != 0:
+                        print(f"Deferred BL/NW plot failed; job retained for retry: {job_path}", file=sys.stderr)
+                        exit_code = exit_code or 4
 
     preview_path: Path | None = None
     if iv_sqlite_path is not None:

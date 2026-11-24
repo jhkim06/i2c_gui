@@ -2,10 +2,12 @@ import i2c_gui2
 import logging
 import datetime
 import fcntl
+import json
 import os
 import threading
 import time
 import sys
+import uuid
 from contextlib import contextmanager
 
 import numpy as np
@@ -959,7 +961,8 @@ class i2c_connection():
 
 
     #--------------------------------------------------------------------------#
-    def make_BL_NW_2D_maps(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp,
+    @staticmethod
+    def make_BL_NW_2D_maps(input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp,
                            plot_footer_metadata: str = ""):
 
         from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -1021,7 +1024,8 @@ class i2c_connection():
         return plot_path
 
 
-    def make_BL_NW_1D_hists(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp,
+    @staticmethod
+    def make_BL_NW_1D_hists(input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp,
                             plot_footer_metadata: str = ""):
         import hist
         import matplotlib.pyplot as plt
@@ -1049,7 +1053,8 @@ class i2c_connection():
         fig.savefig(plot_path)
         return plot_path
 
-    def make_rail_readback_1D_plot(self, input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp):
+    @staticmethod
+    def make_rail_readback_1D_plot(input_df: pd.DataFrame, given_chip_name: str, note: str, save_path, timestamp):
         import hist
         import matplotlib.pyplot as plt
         import mplhep as hep
@@ -1095,6 +1100,7 @@ class i2c_connection():
             save_notes: str = "",
             preview_plots: bool = False,
             plot_footer_metadata: str = "",
+            defer_plots: bool = False,
         ):
 
         import sqlite3
@@ -1123,7 +1129,8 @@ class i2c_connection():
 
 
             current_df = self.BL_df[chip_address]
-            pivot_df = current_df.pivot(index=['row'], columns=['col'], values=['baseline', 'noise_width'])
+            if not defer_plots:
+                pivot_df = current_df.pivot(index=['row'], columns=['col'], values=['baseline', 'noise_width'])
 
             ### Save baseline into SQL
             current_df.loc[:, "save_notes"] = save_notes
@@ -1131,7 +1138,38 @@ class i2c_connection():
                 if 'rail_meas_current_A' in current_df.columns:
                     from keysight_e36312a_monitor import ensure_baseline_rail_columns
                     ensure_baseline_rail_columns(sqlconn)
+                start_rowid = None
+                if defer_plots:
+                    table_exists = sqlconn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='baselines'"
+                    ).fetchone()
+                    start_rowid = (sqlconn.execute(
+                        'SELECT COALESCE(MAX(rowid), 0) FROM baselines'
+                    ).fetchone()[0] + 1) if table_exists else 1
                 current_df.to_sql('baselines', sqlconn, if_exists='append', index=False)
+                if defer_plots:
+                    end_rowid = sqlconn.execute('SELECT MAX(rowid) FROM baselines').fetchone()[0]
+
+            if defer_plots:
+                if end_rowid - start_rowid + 1 != len(current_df):
+                    raise RuntimeError('Cannot identify exact SQLite rows for deferred BL/NW plots')
+                job_dir = save_mother_path / 'deferred_bl_nw_plots'
+                job_dir.mkdir(exist_ok=True, parents=True)
+                job_path = job_dir / f'{uuid.uuid4().hex}.json'
+                job = {
+                    'sqlite_path': str(outfile.resolve()), 'rowid_start': start_rowid,
+                    'rowid_end': end_rowid, 'row_count': len(current_df),
+                    'chip_name': chip_name, 'figure_dirs': [str(path.resolve()) for path in chip_fig_outdirs],
+                    'timestamp': timestamp, 'save_notes': save_notes,
+                    'plot_footer_metadata': plot_footer_metadata,
+                    'output_dir': str(save_mother_path.resolve()),
+                    'rail_readback': {'rail_meas_voltage_V', 'rail_meas_current_A'}.issubset(current_df.columns),
+                }
+                temporary_job_path = job_path.with_suffix('.tmp')
+                temporary_job_path.write_text(json.dumps(job), encoding='utf-8')
+                temporary_job_path.replace(job_path)
+                print(f'DEFERRED_BL_NW_JOB={job_path}', flush=True)
+                continue
 
             for fig_index, chip_fig_outdir in enumerate(chip_fig_outdirs):
                 ## Make BL and NW 2D map

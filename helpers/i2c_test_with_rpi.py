@@ -31,6 +31,8 @@ parser.add_argument(
     action="store_true",
     help="Do not open the saved baseline/noise-width map (shown by default when a display is available)",
 )
+parser.add_argument("--defer-bl-nw-plots", action="store_true",
+                    help="Save BL/NW rows to SQLite now and render plots later from a deferred job")
 parser.add_argument(
     "--acc_scurve_pixels",
     type=str,
@@ -49,6 +51,8 @@ parser.add_argument(
 args = parser.parse_args()
 if args.psu_device and not args.measure_1v2:
     parser.error("--psu-device requires --measure-1v2")
+if args.defer_bl_nw_plots and not args.no_show_plots:
+    parser.error("--defer-bl-nw-plots requires --no-show-plots")
 
 try:
     _, output_dir, _ = helpers.measurement_output_paths()
@@ -109,7 +113,8 @@ full_notes = f"{args.save_notes}" if args.save_notes else now
 
 preview_paths = i2c_conn.save_baselines(hist_dir=output_dir, save_notes=full_notes,
                                        preview_plots=not args.no_show_plots,
-                                       plot_footer_metadata=args.plot_footer_metadata)
+                                       plot_footer_metadata=args.plot_footer_metadata,
+                                       defer_plots=args.defer_bl_nw_plots)
 
 if not args.no_show_plots:
     if os.environ.get("DISPLAY") or os.environ.get("TMUX"):

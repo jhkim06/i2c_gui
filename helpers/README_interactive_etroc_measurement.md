@@ -68,7 +68,13 @@ The workflow does not pass `--save-notes` to the IV script; the config supplies
 `Keithley 2400 BV=-100V`), while `--plot-footer-metadata` adds operator and
 contact information once at the bottom, identifying this run as a bias sweep.
 This config also performs ETROC auto-calibration at **−100 V**. The existing IV
-script handles bias output shutdown; if it fails, this wrapper stops and asks
+script now defers BL/NW PNG rendering until after its bias shutdown; SQLite
+rows and a recoverable plot-job file are saved during calibration. If rendering
+fails, the job remains in `helpers/output/deferred_bl_nw_plots/` and can be
+retried with `python render_deferred_bl_nw_plots.py JOB.json`. Pass
+`--no-defer-bl-nw-plots` directly to the IV script to restore immediate PNG
+saving. `--no-show-plots` still only controls X-window display.
+If bias shutdown fails, this wrapper stops and asks
 the operator to verify that the Keithley output is off before continuing.
 
 The controller only recognizes an exact `60` cell in the `i2cdetect` scan;
