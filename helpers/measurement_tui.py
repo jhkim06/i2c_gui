@@ -21,6 +21,7 @@ class MeasurementTUI:
         self.menu = ""
         self.prompt = ""
         self.answer = ""
+        self.histories: dict[str, list[str]] = {}
         self.status = {
             "operator": "—", "sample_type": "—", "sample_name": "—",
             "probe": False, "bv": False, "probe_trial": 0, "bv_trial": 0,
@@ -156,9 +157,23 @@ class MeasurementTUI:
         self._text(height - 1, 0, self.prompt + self.answer)
         self.screen.refresh()
 
-    def ask(self, prompt: str) -> str:
+    def remember_history(self, key: str, value: str) -> None:
+        history = self.histories.setdefault(key, [])
+        if value in history:
+            history.remove(value)
+        history.append(value)
+        del history[:-100]
+
+    def ask_with_history(self, prompt: str, key: str) -> str:
+        return self.ask(prompt, history_key=key)
+
+    def ask(self, prompt: str, *, history_key: str | None = None) -> str:
         self.prompt = prompt
         self.answer = ""
+        history = self.histories.get(history_key, []) if history_key else []
+        history_index = len(history)
+        history_prefix: str | None = None
+        draft = ""
         self.draw()
         # Menus should wait for a real keypress even if input mode changed.
         self.screen.timeout(-1)
@@ -175,6 +190,27 @@ class MeasurementTUI:
                 raise EOFError("Terminal input unavailable") from exc
             if key == curses.KEY_RESIZE:
                 self.draw()
+            elif key == curses.KEY_UP and history:
+                if history_prefix is None:
+                    history_prefix = self.answer
+                    draft = self.answer
+                for index in range(history_index - 1, -1, -1):
+                    if history[index].casefold().startswith(history_prefix.casefold()):
+                        history_index = index
+                        self.answer = history[index]
+                        self.draw()
+                        break
+            elif key == curses.KEY_DOWN and history_prefix is not None:
+                for index in range(history_index + 1, len(history)):
+                    if history[index].casefold().startswith(history_prefix.casefold()):
+                        history_index = index
+                        self.answer = history[index]
+                        self.draw()
+                        break
+                else:
+                    history_index = len(history)
+                    self.answer = draft
+                    self.draw()
             elif key in ("\n", "\r", curses.KEY_ENTER):
                 result = self.answer
                 self.prompt = ""
@@ -187,9 +223,13 @@ class MeasurementTUI:
                 return result
             elif key in ("\b", "\x7f", curses.KEY_BACKSPACE):
                 self.answer = self.answer[:-1]
+                history_index = len(history)
+                history_prefix = None
                 self.draw()
             elif isinstance(key, str) and key.isprintable():
                 self.answer += key
+                history_index = len(history)
+                history_prefix = None
                 self.draw()
 
     def run_script(self, command: list[str], cwd: Path) -> int:

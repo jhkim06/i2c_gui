@@ -174,9 +174,12 @@ class MeasurementWorkflow:
                 return answer
             print(f"Choose one of: {', '.join(allowed)}")
 
-    def required(self, prompt: str) -> str:
+    def required(self, prompt: str, *, history_key: str | None = None) -> str:
         while True:
-            value = self.ask(prompt).strip()
+            if history_key is not None and self.ui is not None and hasattr(self.ui, "ask_with_history"):
+                value = self.ui.ask_with_history(prompt, history_key).strip()
+            else:
+                value = self.ask(prompt).strip()
             if value:
                 return value
             print("A value is required.")
@@ -289,14 +292,20 @@ class MeasurementWorkflow:
         self.menu("[b] Bare ETROC   [h] Hybrid")
         sample_type = "Bare ETROC" if self.choice("[b] Bare ETROC or [h] Hybrid? ", ("b", "h")) == "b" else "Hybrid"
         self.status(operator=operator, sample_type=sample_type, phase="Select sample")
-        self.menu("Enter a new sample name, or q to exit")
+        sample_menu = ("Enter a new sample name (↑/↓ history), or q to exit"
+                       if self.ui is not None and hasattr(self.ui, "ask_with_history")
+                       else "Enter a new sample name, or q to exit")
+        self.menu(sample_menu)
         while True:
-            sample_name = self.required(f"New {sample_type} name (q to exit): ")
+            sample_name = self.required(f"New {sample_type} name (q to exit): ",
+                                        history_key=sample_type)
             if sample_name.lower() == "q":
                 return
+            if self.ui is not None and hasattr(self.ui, "remember_history"):
+                self.ui.remember_history(sample_type, sample_name)
             self.sample(operator, sample_type, sample_name)
             self.status(sample_name="—", probe=False, bv=False, i2c="NOT CHECKED", phase="Select sample")
-            self.menu("Enter a new sample name, or q to exit")
+            self.menu(sample_menu)
 
 
 def run_measurement(args, ui=None) -> int:

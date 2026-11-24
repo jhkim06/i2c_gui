@@ -14,7 +14,12 @@ python interactive_etroc_measurement.py
 ```
 
 The program asks for the operator, sample type, and each sample name. Enter `q`
-at the sample-name prompt to exit. The default PSU device is auto-detected; use
+at the sample-name prompt to exit.
+In the terminal UI, Up/Down at the sample-name prompt recalls names from the
+current run; typing a prefix first searches matching names. Hybrid and Bare
+ETROC histories are separate, and `q` is not stored.
+
+The default PSU device is auto-detected; use
 `--psu-device /dev/usbtmc0` if necessary. The E36312A CH1/CH2 presets come from
 `keysight_e36312a_interactive.py` (currently 1.2 V/0.6 A and 1.0 V/0.5 A).
 They are printed at startup. For a session-specific override, use for example

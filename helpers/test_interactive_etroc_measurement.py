@@ -56,6 +56,17 @@ class FakeUI:
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_sample_name_prompt_uses_history_only_for_names(self) -> None:
+        psu, etroc, ui = FakePSU(), FakeETROC(), FakeUI()
+        answers = iter(("Alice", "h", "H1", "q", "q"))
+        searched = []
+        remembered = []
+        ui.ask_with_history = lambda prompt, key: (searched.append(key), next(answers))[1]
+        ui.remember_history = lambda key, value: remembered.append((key, value))
+        MeasurementWorkflow(psu, etroc, lambda _: next(answers), ui=ui).run()
+        self.assertEqual(searched, ["Hybrid", "Hybrid"])
+        self.assertEqual(remembered, [("Hybrid", "H1")])
+
     def test_original_startup_error_is_retained_for_tui_exit(self) -> None:
         args = SimpleNamespace(psu_device=None, ch1_voltage=1.2, ch1_current_limit=0.6,
                                ch2_voltage=1.0, ch2_current_limit=0.5)
