@@ -69,9 +69,11 @@ The workflow does not pass `--save-notes` to the IV script; the config supplies
 contact information once at the bottom, identifying this run as a bias sweep.
 This config also performs ETROC auto-calibration at **−100 V**. During IV,
 SQLite rows and a recoverable plot-job file are saved at the calibration step.
-After the Keithley output-off command succeeds, BL/NW PNG rendering starts in
-the background while the IV sweep continues; the IV script does not wait for
-those PNGs before returning. Jobs disappear when rendering succeeds. Check
+BL/NW PNG rendering starts in the background while the Keithley 2400 remains
+at the current bias and the IV sweep continues; the IV script does not wait for
+those PNGs before returning. The output stays on between normal voltage steps
+and turns off after the final 0 V step (or on a fault). Jobs disappear when
+rendering succeeds. Check
 `helpers/output/deferred_bl_nw_plots/` for remaining `.json` jobs and their
 `.log` files; a failed job can be retried after the bias is off with
 `python render_deferred_bl_nw_plots.py JOB.json`. Pass

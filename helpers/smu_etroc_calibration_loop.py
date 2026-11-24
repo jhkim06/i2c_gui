@@ -8,11 +8,12 @@ The script can run in two modes:
 
 For each experiment step:
   1. Set SMU bias voltage and current compliance.
-  2. Enable output.
+  2. Enable output once for a Keithley 2400 sweep, then update its fixed
+     voltage level while output stays on between normal steps.
   3. Record current before calibration.
   4. Run i2c_test_with_rpi.py and wait until it finishes.
-     By default it saves BL/NW SQLite rows; after SMU output-off at that step,
-     a detached worker renders PNGs while the voltage sweep continues.
+     By default it saves BL/NW SQLite rows; a detached worker renders PNGs
+     while the voltage sweep continues without changing the SMU output.
   5. Append pre-calibration IV measurements to cumulative IVHistory.sqlite,
      and optionally save per-step calibration logs when requested.
   6. Draw an IV curve plot from the pre-calibration currents after the voltage scan is done.
@@ -78,7 +79,8 @@ Run with Keithley 2400:
     --voltages -2 -3 -4 -5 --current-limit 100e-6
 
 Safety:
-  - SMU output is turned OFF when changing voltage.
+  - Keithley 2400 output stays ON between normal sweep points; other drivers
+    retain their existing per-step output-off behavior.
   - SMU output is turned OFF at the end, including on Ctrl-C or failures.
   - Current compliance defaults to 100 uA if not specified.
   - SMU-specific code lives in separate driver modules, e.g. smu_keithley.py,
@@ -1003,6 +1005,7 @@ def main() -> int:
     smu_note = ""
     output_off_succeeded = False
     deferred_bl_nw_jobs: list[Path] = []
+    continuous_output_active = False
 
     if no_smu_requested:
         smu_note = "No-SMU mode requested; Keithley connection skipped."
@@ -1049,6 +1052,10 @@ def main() -> int:
                 connected, message = check_etroc2_connected(etroc_i2c_bus, etroc_i2c_address)
                 print(message)
                 if not connected:
+                    if smu is not None and continuous_output_active:
+                        print("ETROC2 I2C check failed; turning SMU output OFF before re-checking")
+                        smu.output_off()
+                        continuous_output_active = False
                     print("ETROC2 is not connected/responding; waiting and re-checking before abort.", file=sys.stderr)
                     connected, _message = wait_and_recheck_etroc2(
                         etroc_i2c_bus,
@@ -1067,7 +1074,10 @@ def main() -> int:
                     f"Configuring voltage source: voltage={voltage:g} V, "
                     f"current_limit={current_limit:g} A"
                 )
-                smu.configure_voltage(voltage, current_limit)
+                if smu_driver == "keithley_2400" and continuous_output_active:
+                    smu.set_voltage(voltage, current_limit)
+                else:
+                    smu.configure_voltage(voltage, current_limit)
                 setup_errors = smu.drain_errors()
                 if setup_errors:
                     print("Keithley setup errors:", file=sys.stderr)
@@ -1075,8 +1085,11 @@ def main() -> int:
                         print(f"  {err}", file=sys.stderr)
                     return 3
 
-                print("Enabling SMU output")
-                smu.output_on()
+                if not continuous_output_active:
+                    print("Enabling SMU output")
+                    smu.output_on()
+                    if smu_driver == "keithley_2400":
+                        continuous_output_active = True
                 time.sleep(settle)
                 if voltage_wait and hasattr(smu, "wait_until_voltage"):
                     print(f"Waiting for monitored voltage to reach {voltage:g} V")
@@ -1282,9 +1295,10 @@ def main() -> int:
                     print("Stopping because calibration failed. Use --continue-on-error to keep going.")
                     stop_scan = True
 
-            if smu is not None:
+            if smu is not None and (smu_driver != "keithley_2400" or stop_scan):
                 print("Turning output OFF before next step")
                 smu.output_off()
+                continuous_output_active = False
             if deferred_bl_nw_jobs:
                 deferred_bl_nw_jobs = start_deferred_bl_nw_jobs(deferred_bl_nw_jobs)
 

@@ -180,6 +180,8 @@ def configure_voltage_source(smu: Keithley2400IO, voltage: float, current_limit:
     # Keithley 2400 SourceMeter SCPI: source voltage, measure current, set
     # current compliance/protection with SENS:CURR:PROT.
     smu.write(":OUTP OFF")
+    # A current read must not auto-clear the output during a continuous sweep.
+    smu.write(":SOUR:CLE:AUTO OFF")
     smu.write(":SOUR:FUNC VOLT")
     smu.write(":SOUR:VOLT:MODE FIXED")
     smu.write(":SOUR:VOLT:RANG:AUTO ON")
@@ -220,6 +222,11 @@ class Keithley2400BiasSupply:
 
     def configure_voltage(self, voltage: float, current_limit: float) -> None:
         configure_voltage_source(self.smu, voltage, current_limit)
+
+    def set_voltage(self, voltage: float, current_limit: float) -> None:
+        """Advance a fixed-source sweep point without switching output off."""
+        self.smu.write(f":SENS:CURR:PROT {current_limit}")
+        self.smu.write(f":SOUR:VOLT:LEV {voltage}")
 
     def output_on(self) -> None:
         self.smu.write(":OUTP ON")
