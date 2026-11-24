@@ -58,8 +58,8 @@ Auto-calibration calls `i2c_test_with_rpi.py` with the optional
 contact trials, and contact state through `--plot-footer-metadata`, placing that
 text once at the bottom center of each BL/NW 2D and 1D figure. It does not pass
 `--save_notes`; the calibration script retains its existing notes, plot-title,
-and SQLite behavior. Before BV-menu calibration the operator must confirm that
-the Keithley bias output is off and BV is 0 V; otherwise calibration is skipped.
+and SQLite behavior. BV-menu calibration starts without an additional bias
+confirmation prompt; its plot footer labels the contacted-tip state as `BV=0 V`.
 
 IV calls `smu_etroc_calibration_loop.py` with
 `iv_configs/experiment_smu_voltage_scan_keithley_2400.json`.

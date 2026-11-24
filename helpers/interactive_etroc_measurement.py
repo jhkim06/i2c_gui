@@ -260,10 +260,6 @@ class MeasurementWorkflow:
                 action = self.choice("> ", ("a", "i", "b", "u"))
                 metadata = SessionMetadata(operator, sample_type, sample_name, probe_trial, bv_trial)
                 if action == "a":
-                    if self.choice("Confirm Keithley bias output is OFF and BV is 0 V [y/n]: ",
-                                   ("y", "n")) != "y":
-                        print("Calibration skipped; BV=0 V was not confirmed.")
-                        continue
                     self.status(phase="Auto-calibration running")
                     success = self.etroc.calibrate(metadata, bv_contacted=True)
                     self.status(phase="BV menu")

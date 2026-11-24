@@ -90,7 +90,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_calibrations_iv_and_stepwise_uncontact(self) -> None:
         psu, etroc = FakePSU(), FakeETROC()
-        answers = iter(("Alice", "h", "H1", "d", "a", "b", "d", "a", "y", "i", "b", "d", "u", "d", "q", "q"))
+        answers = iter(("Alice", "h", "H1", "d", "a", "b", "d", "a", "i", "b", "d", "u", "d", "q", "q"))
         MeasurementWorkflow(psu, etroc, lambda _: next(answers)).run()
 
         self.assertEqual([event for event in etroc.events if event[0] == "calibrate"],
