@@ -66,16 +66,26 @@ class MeasurementTUI:
     def flush(self) -> None:
         pass
 
-    def _text(self, row: int, col: int, value: str, attr: int = 0) -> int:
+    def _text(self, row: int, col: int, value: str, attr: int = 0,
+              end_col: int | None = None) -> int:
         height, width = self.screen.getmaxyx()
-        if row >= height or col >= width - 1:
+        limit = min(width - 1, end_col if end_col is not None else width - 1)
+        if row >= height or col >= limit:
             return col
         value = str(value).expandtabs(4)
+        length = min(len(value), limit - col)
         try:
-            self.screen.addnstr(row, col, value, width - col - 1, attr)
+            self.screen.addnstr(row, col, value, length, attr)
         except curses.error:
             pass
-        return col + len(value)
+        return col + length
+
+    def _contact(self, row: int, col: int, label: str, contacted: bool,
+                 trial: int, end_col: int | None = None) -> None:
+        col = self._text(row, col, label, end_col=end_col)
+        col = self._text(row, col, "CONTACTED" if contacted else "NOT CONTACTED",
+                         self.red if contacted else 0, end_col=end_col)
+        self._text(row, col, f" (trial {trial})", end_col=end_col)
 
     def draw(self) -> None:
         height, width = self.screen.getmaxyx()
@@ -86,23 +96,36 @@ class MeasurementTUI:
             return
 
         state = self.status
-        self._text(0, 0, f"Sample: {state['sample_name']} ({state['sample_type']})  |  Operator: {state['operator']}")
-        col = self._text(1, 0, "Probe: ")
-        col = self._text(1, col, "CONTACTED" if state['probe'] else "NOT CONTACTED",
-                         self.red if state['probe'] else 0)
-        col = self._text(1, col, f" (trial {state['probe_trial']})  |  BV tip: ")
-        col = self._text(1, col, "CONTACTED" if state['bv'] else "NOT CONTACTED",
-                         self.red if state['bv'] else 0)
-        self._text(1, col, f" (trial {state['bv_trial']})")
-        col = self._text(2, 0, f"PSU CH1/CH2: {state['psu']}  |  ETROC I²C 0x60: ")
-        self._text(2, col, state['i2c'], self.red if state['i2c'] == "DETECTED" else 0)
-        self._text(3, 0, f"Stage: {state['phase']}")
-        self._text(4, 0, "─" * (width - 1))
+        if width >= 70:
+            right_col = width // 2
+            left_end = right_col - 2
+            self._text(0, 0, f"Sample: {state['sample_name']} ({state['sample_type']})", end_col=left_end)
+            self._text(0, right_col, f"Operator: {state['operator']}")
+            self._contact(1, 0, "Probe: ", state['probe'], state['probe_trial'], left_end)
+            self._contact(1, right_col, "BV tip: ", state['bv'], state['bv_trial'])
+            self._text(2, 0, f"PSU CH1/CH2: {state['psu']}", end_col=left_end)
+            col = self._text(2, right_col, "ETROC I²C 0x60: ")
+            self._text(2, col, state['i2c'], self.red if state['i2c'] == "DETECTED" else 0)
+            self._text(3, 0, f"Stage: {state['phase']}")
+            separator_row = 4
+        else:
+            # Stack the same fields when two readable columns cannot fit.
+            self._text(0, 0, f"Sample: {state['sample_name']} ({state['sample_type']})")
+            self._text(1, 0, f"Operator: {state['operator']}")
+            self._contact(2, 0, "Probe: ", state['probe'], state['probe_trial'])
+            self._contact(3, 0, "BV tip: ", state['bv'], state['bv_trial'])
+            self._text(4, 0, f"PSU CH1/CH2: {state['psu']}")
+            col = self._text(5, 0, "ETROC I²C 0x60: ")
+            self._text(5, col, state['i2c'], self.red if state['i2c'] == "DETECTED" else 0)
+            self._text(6, 0, f"Stage: {state['phase']}")
+            separator_row = 7
+        self._text(separator_row, 0, "─" * (width - 1))
 
         menu_lines = textwrap.wrap(self.menu, width=width - 1, break_long_words=False) or [""]
         menu_lines = menu_lines[:3]
         menu_top = height - 1 - len(menu_lines)
-        log_height = menu_top - 6
+        log_start = separator_row + 1
+        log_height = max(0, menu_top - log_start - 1)
         recent = list(self.lines)
         if self.pending:
             recent.append(self.pending)
@@ -112,7 +135,7 @@ class MeasurementTUI:
             wrapped.extend(reversed(parts))
             if len(wrapped) >= log_height:
                 break
-        for row, line in enumerate(reversed(wrapped[:log_height]), start=5):
+        for row, line in enumerate(reversed(wrapped[:log_height]), start=log_start):
             self._text(row, 0, line)
 
         self._text(menu_top - 1, 0, "─" * (width - 1))
