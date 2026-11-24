@@ -27,6 +27,7 @@ class MeasurementTUI:
             "psu": "UNKNOWN", "i2c": "NOT CHECKED", "phase": "Starting",
         }
         self.red = curses.A_BOLD
+        self.green = curses.A_NORMAL
         if curses.has_colors():
             curses.start_color()
             try:
@@ -35,7 +36,9 @@ class MeasurementTUI:
             except curses.error:
                 background = curses.COLOR_BLACK
             curses.init_pair(1, curses.COLOR_RED, background)
+            curses.init_pair(2, curses.COLOR_GREEN, background)
             self.red |= curses.color_pair(1)
+            self.green = curses.A_BOLD | curses.color_pair(2)
         try:
             curses.curs_set(0)
         except curses.error:
@@ -84,8 +87,19 @@ class MeasurementTUI:
                  trial: int, end_col: int | None = None) -> None:
         col = self._text(row, col, label, end_col=end_col)
         col = self._text(row, col, "CONTACTED" if contacted else "NOT CONTACTED",
-                         self.red if contacted else 0, end_col=end_col)
+                         self.red if contacted else self.green, end_col=end_col)
         self._text(row, col, f" (trial {trial})", end_col=end_col)
+
+    def _psu(self, row: int, col: int, value: str, end_col: int | None = None) -> None:
+        col = self._text(row, col, "PSU CH1/CH2: ", end_col=end_col)
+        attr = self.red if value == "ON" else self.green if value == "OFF" else 0
+        self._text(row, col, value, attr, end_col=end_col)
+
+    def _i2c(self, row: int, col: int, value: str) -> None:
+        col = self._text(row, col, "ETROC I²C 0x60: ")
+        attr = (self.red if value == "DETECTED" else
+                self.green if value in ("NOT CHECKED", "NOT DETECTED") else 0)
+        self._text(row, col, value, attr)
 
     def draw(self) -> None:
         height, width = self.screen.getmaxyx()
@@ -103,9 +117,8 @@ class MeasurementTUI:
             self._text(0, right_col, f"Operator: {state['operator']}")
             self._contact(1, 0, "Probe: ", state['probe'], state['probe_trial'], left_end)
             self._contact(1, right_col, "BV tip: ", state['bv'], state['bv_trial'])
-            self._text(2, 0, f"PSU CH1/CH2: {state['psu']}", end_col=left_end)
-            col = self._text(2, right_col, "ETROC I²C 0x60: ")
-            self._text(2, col, state['i2c'], self.red if state['i2c'] == "DETECTED" else 0)
+            self._psu(2, 0, state['psu'], left_end)
+            self._i2c(2, right_col, state['i2c'])
             self._text(3, 0, f"Stage: {state['phase']}")
             separator_row = 4
         else:
@@ -114,9 +127,8 @@ class MeasurementTUI:
             self._text(1, 0, f"Operator: {state['operator']}")
             self._contact(2, 0, "Probe: ", state['probe'], state['probe_trial'])
             self._contact(3, 0, "BV tip: ", state['bv'], state['bv_trial'])
-            self._text(4, 0, f"PSU CH1/CH2: {state['psu']}")
-            col = self._text(5, 0, "ETROC I²C 0x60: ")
-            self._text(5, col, state['i2c'], self.red if state['i2c'] == "DETECTED" else 0)
+            self._psu(4, 0, state['psu'])
+            self._i2c(5, 0, state['i2c'])
             self._text(6, 0, f"Stage: {state['phase']}")
             separator_row = 7
         self._text(separator_row, 0, "─" * (width - 1))
@@ -148,12 +160,19 @@ class MeasurementTUI:
         self.prompt = prompt
         self.answer = ""
         self.draw()
+        # Menus should wait for a real keypress even if input mode changed.
+        self.screen.timeout(-1)
         try:
             curses.curs_set(1)
         except curses.error:
             pass
         while True:
-            key = self.screen.get_wch()
+            try:
+                key = self.screen.get_wch()
+            except curses.error as exc:
+                # EOF/disconnected terminal can still fail even in blocking
+                # mode. Let the workflow perform its normal PSU shutdown.
+                raise EOFError("Terminal input unavailable") from exc
             if key == curses.KEY_RESIZE:
                 self.draw()
             elif key in ("\n", "\r", curses.KEY_ENTER):
@@ -179,6 +198,7 @@ class MeasurementTUI:
         process = subprocess.Popen(
             command, cwd=cwd, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
             start_new_session=True, bufsize=0,
         )
         assert process.stdout is not None

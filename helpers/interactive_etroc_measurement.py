@@ -312,10 +312,16 @@ def run_measurement(args, ui=None) -> int:
                                 script_runner=ui.run_script if ui is not None else None)
         MeasurementWorkflow(psu, etroc, ask=ui.ask if ui is not None else input, ui=ui).run()
     except (KeyboardInterrupt, EOFError):
-        print("\nInterrupted; switching controlled PSU outputs OFF.")
+        message = "Interrupted or terminal input unavailable; switching controlled PSU outputs OFF."
+        print(f"\n{message}")
+        if ui is not None:
+            ui.error_summary = message
         exit_code = 130
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        message = f"ERROR: {exc}"
+        print(message, file=sys.stderr)
+        if ui is not None:
+            ui.error_summary = message
         exit_code = 1
     finally:
         if psu is not None:
@@ -324,9 +330,11 @@ def run_measurement(args, ui=None) -> int:
                 if ui is not None:
                     ui.update(psu="OFF", i2c="NOT CHECKED", phase="Finished")
             except Exception as exc:
-                print(f"ERROR: could not confirm PSU shutdown: {exc}", file=sys.stderr)
+                message = f"ERROR: could not confirm PSU shutdown: {exc}"
+                print(message, file=sys.stderr)
                 if ui is not None:
                     ui.update(psu="UNKNOWN", phase="Shutdown warning")
+                    ui.error_summary = message
                 exit_code = 2
     return exit_code
 
@@ -357,16 +365,26 @@ def main() -> int:
     import curses
     from measurement_tui import MeasurementTUI
 
+    failure_summary = ""
+
     def run_tui(screen) -> int:
+        nonlocal failure_summary
         ui = MeasurementTUI(screen)
         with redirect_stdout(ui), redirect_stderr(ui):
             exit_code = run_measurement(args, ui)
             if exit_code:
+                failure_summary = getattr(ui, "error_summary", "Measurement stopped with an error")
                 ui.set_menu("Measurement stopped; review the messages above")
-                ui.ask("Press Enter to return to the shell: ")
+                try:
+                    ui.ask("Press Enter to return to the shell: ")
+                except (EOFError, KeyboardInterrupt):
+                    pass
             return exit_code
 
-    return curses.wrapper(run_tui)
+    exit_code = curses.wrapper(run_tui)
+    if exit_code:
+        print(failure_summary, file=sys.stderr)
+    return exit_code
 
 
 if __name__ == "__main__":

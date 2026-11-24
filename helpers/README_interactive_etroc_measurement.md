@@ -22,10 +22,13 @@ They are printed at startup. For a session-specific override, use for example
 during contact changes and on exit; it turns on only CH1/CH2 after contact.
 
 In an interactive terminal, a text UI keeps the sample, probe/BV contact,
-PSU, and ETROC I²C status fixed at the top. **CONTACTED** and **DETECTED** are
-red. Calibration/IV messages scroll in the middle, and the current menu stays
+PSU, and ETROC I²C status fixed at the top. Confirmed inactive states
+(not contacted, PSU off, I²C not checked/detected) are green; contacted,
+PSU on, and I²C detected states are red. Unknown/checking states stay neutral.
+Calibration/IV messages scroll in the middle, and the current menu stays
 at the bottom. Child scans run with their output streamed into that message
-area; Ctrl-C is forwarded to the child, and the workflow waits for its shutdown
+area with Python output unbuffered, so IV progress appears during the scan.
+Ctrl-C is forwarded to the child, and the workflow waits for its shutdown
 before returning. Use `--plain` for the original scrolling prompts (also used
 automatically when stdin/stdout is not a terminal). The separate X11 plot
 windows still open outside the terminal UI when a display is available.

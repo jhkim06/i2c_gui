@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from interactive_etroc_measurement import EtrocController, MeasurementWorkflow, PowerSupplyController, SessionMetadata  # noqa: E402
+from interactive_etroc_measurement import EtrocController, MeasurementWorkflow, PowerSupplyController, SessionMetadata, run_measurement  # noqa: E402
 
 
 class FakePSU:
@@ -56,6 +56,15 @@ class FakeUI:
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_original_startup_error_is_retained_for_tui_exit(self) -> None:
+        args = SimpleNamespace(psu_device=None, ch1_voltage=1.2, ch1_current_limit=0.6,
+                               ch2_voltage=1.0, ch2_current_limit=0.5)
+        ui = FakeUI()
+        with patch("interactive_etroc_measurement.PowerSupplyController",
+                   side_effect=RuntimeError("PSU not found")):
+            self.assertEqual(run_measurement(args, ui), 1)
+        self.assertEqual(ui.error_summary, "ERROR: PSU not found")
+
     def test_status_follows_contact_and_uncontact(self) -> None:
         psu, etroc, ui = FakePSU(), FakeETROC(), FakeUI()
         answers = iter(("Alice", "h", "H1", "d", "b", "d", "b", "d", "u", "d", "q", "q"))
