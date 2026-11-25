@@ -20,6 +20,7 @@ from typing import Callable
 
 from keysight_e36312a_interactive import DEFAULT_PRESETS, USBTMCInstrument, discover_device
 from gelpak_map import GelPakMap, fetch_gelpak
+from sample_naming import canonical_sample_name
 
 
 HELPERS_DIR = Path(__file__).resolve().parent
@@ -314,10 +315,17 @@ class MeasurementWorkflow:
                        else "Enter a new sample name, or q to exit")
         self.menu(sample_menu)
         while True:
-            sample_name = self.required(f"New {sample_type} name (q to exit): ",
-                                        history_key=sample_type)
-            if sample_name.lower() == "q":
+            entered_name = self.required(f"New {sample_type} name (q to exit): ",
+                                         history_key=sample_type)
+            if entered_name.lower() == "q":
                 return
+            try:
+                sample_name = canonical_sample_name(entered_name)
+            except ValueError as exc:
+                print(f"Invalid sample name: {exc}")
+                continue
+            if entered_name != sample_name:
+                print(f"Using sample name {sample_name} for plots, directories, and SQLite")
             if self.ui is not None and hasattr(self.ui, "remember_history"):
                 self.ui.remember_history(sample_type, sample_name)
             self.sample(operator, sample_type, sample_name)

@@ -9,6 +9,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import urlopen
 
+from sample_naming import canonical_sample_name
+
 
 REGISTRY_URL = "https://gpm-etl.app.cern.ch"
 
@@ -22,11 +24,19 @@ class GelPakMap:
     def slot_lines(self, selected_sample: str = "") -> list[tuple[str, bool]]:
         """Return A1–C3 labels and whether each slot matches the sample."""
         lines = []
+        try:
+            selected_name = canonical_sample_name(selected_sample)
+        except ValueError:
+            selected_name = selected_sample.casefold()
         for position, sample in enumerate(self.slots):
             coordinate = f"{'ABC'[position // 3]}{position % 3 + 1}"
-            selected = bool(sample and selected_sample and
-                            sample.casefold() == selected_sample.casefold())
-            lines.append((f"{coordinate}  {sample or '— empty —'}", selected))
+            try:
+                sample_name = canonical_sample_name(sample or "")
+            except ValueError:
+                sample_name = (sample or "").casefold()
+            selected = bool(sample and selected_sample and sample_name == selected_name)
+            display_name = sample.split(":", 1)[0].strip() if sample else "— empty —"
+            lines.append((f"{coordinate}  {display_name}", selected))
         return lines
 
     def grid_rows(self, selected_sample: str = "") -> list[list[tuple[str, bool]]]:

@@ -17,7 +17,8 @@ The program asks for the operator, sample type, whether samples are in a Gel-Pak
 and each sample name. For a Gel-Pak session, enter its registry ID (for example,
 `gp-e-039`). The separate `gelpak_map.py` helper fetches the public nine-slot
 map with a read-only GET and displays A1–C3 at the lower right of the terminal
-UI as a top-view 3×3 grid (A1–A3, B1–B3, C1–C3). The current sample is
+UI as a top-view 3×3 grid (A1–A3, B1–B3, C1–C3). Long registry labels show
+only the part before `:` in this compact grid. The current sample is
 highlighted when its name matches a slot. On a narrow terminal the slot map
 is compact; widen to at least 80 columns and 20 rows for longer names. The
 input marker blinks in the left prompt independently of terminal cursor settings.
@@ -29,6 +30,13 @@ printed once before sample entry.
 
 Enter `q`
 at the sample-name prompt to exit.
+Sample names entered here must follow `W##-number` or `W##_###`. Only the
+part before an optional `:` is used: `W15-19:HPK-W64-12` becomes `W15_019`,
+and `W15-10` becomes `W15_010`. This canonical `W##_###` name is shown in
+the status, stored in prompt history, and passed as `chip_name` to both
+measurement scripts. Their SQLite records, plot filenames, and per-sample
+figure directories therefore use the same canonical name. Invalid names are
+rejected before probe contact begins.
 In the terminal UI, Up/Down at the sample-name prompt recalls names from the
 current run; typing a prefix first searches matching names. Hybrid and Bare
 ETROC histories are separate, and `q` is not stored.
