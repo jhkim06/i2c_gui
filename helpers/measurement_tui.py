@@ -112,6 +112,26 @@ class MeasurementTUI:
                 self.green if value in ("NOT CHECKED", "NOT DETECTED") else 0)
         self._text(row, col, value, attr)
 
+    @staticmethod
+    def _map_rows(gelpak: GelPakMap, selected: str, cell_width: int):
+        """Keep every registry character visible in its physical grid cell."""
+        rows = []
+        chunk_width = max(1, cell_width - 1)
+        for cells in gelpak.grid_rows(selected):
+            chunks = [[line[i:i + chunk_width] for i in range(0, len(line), chunk_width)]
+                      for line, _ in cells]
+            rows.append((cells, chunks, max(map(len, chunks))))
+        return rows
+
+    def _draw_map_rows(self, rows, top: int, start_col: int, cell_width: int) -> None:
+        for cells, chunks, row_height in rows:
+            for column, ((_, selected), fragments) in enumerate(zip(cells, chunks)):
+                for offset, fragment in enumerate(fragments):
+                    self._text(top + offset, start_col + column * cell_width,
+                               fragment, self.red if selected else 0,
+                               end_col=start_col + (column + 1) * cell_width)
+            top += row_height
+
     def draw(self) -> None:
         height, width = self.screen.getmaxyx()
         self.screen.erase()
@@ -151,8 +171,13 @@ class MeasurementTUI:
         menu_top = height - 1 - len(menu_lines)
         log_start = separator_row + 1
         compact_map = self.gelpak is not None and not side_panel and height >= 20
-        panel_top = (max(log_start + 1, height - 7) if side_panel else
-                     menu_top - 5 if compact_map else menu_top - 1)
+        map_rows = []
+        if side_panel or compact_map:
+            map_cell_width = max(1, (width - 1 - (width // 2 if side_panel else 0)) // 3)
+            map_rows = self._map_rows(self.gelpak, state["sample_name"], map_cell_width)
+        map_height = sum(row_height for _, _, row_height in map_rows)
+        panel_top = (max(log_start + 1, height - map_height - 3) if side_panel else
+                     max(log_start + 1, menu_top - map_height - 2) if compact_map else menu_top - 1)
         log_height = max(0, panel_top - log_start - 1)
         recent = list(self.lines)
         if self.pending:
@@ -183,23 +208,18 @@ class MeasurementTUI:
             if self.gelpak.name and self.gelpak.name != self.gelpak.identifier:
                 title += f" — {self.gelpak.name}"
             self._text(panel_top + 1, right_col, title)
-            cell_width = max(1, (width - 1 - right_col) // 3)
-            for grid_row, cells in enumerate(self.gelpak.grid_rows(state["sample_name"])):
-                for grid_col, (line, selected) in enumerate(cells):
-                    self._text(panel_top + 2 + grid_row, right_col + grid_col * cell_width,
-                               line[:cell_width - 1], self.red if selected else 0,
-                               end_col=right_col + (grid_col + 1) * cell_width
-                               if grid_col < 2 else None)
+            if panel_top + 2 + map_height <= height - 1:
+                self._draw_map_rows(map_rows, panel_top + 2, right_col, map_cell_width)
+            else:
+                self._text(panel_top + 2, right_col, "Widen or enlarge terminal for full names")
             self._text(height - 1, right_col, "Top view · read-only")
         else:
             if compact_map:
-                self._text(panel_top + 1, 0, f"Gel-Pak: {self.gelpak.identifier} (compact; widen terminal for names)")
-                cell_width = max(1, (width - 1) // 3)
-                for grid_row, cells in enumerate(self.gelpak.grid_rows(state["sample_name"])):
-                    for grid_col, (line, selected) in enumerate(cells):
-                        self._text(panel_top + 2 + grid_row, grid_col * cell_width,
-                                   line[:cell_width - 1], self.red if selected else 0,
-                                   end_col=(grid_col + 1) * cell_width if grid_col < 2 else None)
+                self._text(panel_top + 1, 0, f"Gel-Pak: {self.gelpak.identifier}")
+                if panel_top + 2 + map_height <= menu_top:
+                    self._draw_map_rows(map_rows, panel_top + 2, 0, map_cell_width)
+                else:
+                    self._text(panel_top + 2, 0, "Enlarge terminal for full Gel-Pak names")
             for row, line in enumerate(menu_lines, start=menu_top):
                 self._text(row, 0, line)
             self._text(height - 1, 0, visible_input)

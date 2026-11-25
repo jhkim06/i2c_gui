@@ -61,11 +61,11 @@ class TUITests(unittest.TestCase):
         slots = [(row, col, text) for row, col, text in screen.positions
                  if text[:2] in {f"{r}{c}" for r in "ABC" for c in "123"}]
         self.assertEqual([(row, col) for row, col, _ in slots[:3]],
-                         [(19, 50), (19, 66), (19, 82)])
-        self.assertEqual([(row, col) for row, col, _ in slots[3:6]],
                          [(20, 50), (20, 66), (20, 82)])
-        self.assertEqual([(row, col) for row, col, _ in slots[6:]],
+        self.assertEqual([(row, col) for row, col, _ in slots[3:6]],
                          [(21, 50), (21, 66), (21, 82)])
+        self.assertEqual([(row, col) for row, col, _ in slots[6:]],
+                         [(22, 50), (22, 66), (22, 82)])
         self.assertTrue(any(row >= 17 and col == 0 and "Probe:" in text
                             for row, col, text in screen.positions))
         self.assertTrue(any(text == "A1  H1" and attr == ui.red
@@ -107,6 +107,17 @@ class TUITests(unittest.TestCase):
                  if text[:2] in {f"{r}{c}" for r in "ABC" for c in "123"}]
         self.assertEqual([[text for row, text in slots if row == line] for line in (19, 20, 21)],
                          [["A1", "A2", "A3"], ["B1", "B2", "B3"], ["C1", "C2", "C3"]])
+
+    def test_full_registry_name_wraps_in_its_slot(self) -> None:
+        ui, screen = self.make_ui()
+        name = "W15-19:HPK-W64-12"
+        ui.set_gelpak(GelPakMap("gp-123", "", (name,) + (None,) * 8))
+        ui.update(sample_name="W15_019")
+        cell_parts = [text for row, col, text in screen.positions
+                      if col == 50 and row in (19, 20)]
+        self.assertEqual("".join(cell_parts), "A1  " + name)
+        self.assertTrue(any(text and attr == ui.red for row, text, attr in screen.drawn
+                            if row in (19, 20)))
 
     def test_ask_blinks_software_cursor_during_idle_timeout(self) -> None:
         ui, screen = self.make_ui()

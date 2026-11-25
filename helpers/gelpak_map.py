@@ -35,7 +35,7 @@ class GelPakMap:
             except ValueError:
                 sample_name = (sample or "").casefold()
             selected = bool(sample and selected_sample and sample_name == selected_name)
-            display_name = sample.split(":", 1)[0].strip() if sample else "— empty —"
+            display_name = sample if sample else "— empty —"
             lines.append((f"{coordinate}  {display_name}", selected))
         return lines
 
