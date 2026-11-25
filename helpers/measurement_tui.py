@@ -24,6 +24,7 @@ class MeasurementTUI:
         self.menu = ""
         self.prompt = ""
         self.answer = ""
+        self._cursor_index = 0
         self._cursor_on = False
         self.histories: dict[str, list[str]] = {}
         self.gelpak: GelPakMap | None = None
@@ -166,13 +167,18 @@ class MeasurementTUI:
             self._text(row, 0, line)
 
         self._text(panel_top, 0, "─" * (width - 1))
+        input_text = self.prompt + self.answer
+        caret = len(self.prompt) + self._cursor_index
+        input_width = max(1, menu_width - 1)
+        input_start = max(0, caret - input_width + 1)
+        visible_input = input_text[input_start:input_start + input_width]
+        input_col = caret - input_start
         if side_panel:
             right_col = width // 2
             self._text(panel_top + 1, 0, "Available actions", end_col=right_col - 1)
             for row, line in enumerate(menu_lines, start=panel_top + 2):
                 self._text(row, 0, line, end_col=right_col - 1)
-            input_col = self._text(height - 1, 0, self.prompt + self.answer,
-                                   end_col=right_col - 1)
+            self._text(height - 1, 0, visible_input, end_col=right_col - 1)
             title = f"Gel-Pak {self.gelpak.identifier}"
             if self.gelpak.name and self.gelpak.name != self.gelpak.identifier:
                 title += f" — {self.gelpak.name}"
@@ -196,10 +202,11 @@ class MeasurementTUI:
                                    end_col=(grid_col + 1) * cell_width if grid_col < 2 else None)
             for row, line in enumerate(menu_lines, start=menu_top):
                 self._text(row, 0, line)
-            input_col = self._text(height - 1, 0, self.prompt + self.answer)
+            self._text(height - 1, 0, visible_input)
         if self.prompt:
-            if self._cursor_on and input_col < menu_width - 1:
-                self._text(height - 1, input_col, " ", curses.A_REVERSE,
+            if self._cursor_on and input_col < input_width:
+                cursor_char = input_text[caret] if caret < len(input_text) else " "
+                self._text(height - 1, input_col, cursor_char, curses.A_REVERSE,
                            end_col=menu_width - 1)
             try:
                 self.screen.move(height - 1, min(input_col, menu_width - 1))
@@ -220,6 +227,7 @@ class MeasurementTUI:
     def ask(self, prompt: str, *, history_key: str | None = None) -> str:
         self.prompt = prompt
         self.answer = ""
+        self._cursor_index = 0
         history = self.histories.get(history_key, []) if history_key else []
         history_index = len(history)
         history_prefix: str | None = None
@@ -256,6 +264,7 @@ class MeasurementTUI:
                     if history[index].casefold().startswith(history_prefix.casefold()):
                         history_index = index
                         self.answer = history[index]
+                        self._cursor_index = len(self.answer)
                         self.draw()
                         break
             elif key == curses.KEY_DOWN and history_prefix is not None:
@@ -263,27 +272,47 @@ class MeasurementTUI:
                     if history[index].casefold().startswith(history_prefix.casefold()):
                         history_index = index
                         self.answer = history[index]
+                        self._cursor_index = len(self.answer)
                         self.draw()
                         break
                 else:
                     history_index = len(history)
                     self.answer = draft
+                    self._cursor_index = len(self.answer)
                     self.draw()
+            elif key == curses.KEY_LEFT:
+                self._cursor_index = max(0, self._cursor_index - 1)
+                self.draw()
+            elif key == curses.KEY_RIGHT:
+                self._cursor_index = min(len(self.answer), self._cursor_index + 1)
+                self.draw()
             elif key in ("\n", "\r", curses.KEY_ENTER):
                 result = self.answer
                 self.prompt = ""
                 self.answer = ""
+                self._cursor_index = 0
                 self._cursor_on = False
                 self.screen.timeout(-1)
                 self.draw()
                 return result
             elif key in ("\b", "\x7f", curses.KEY_BACKSPACE):
-                self.answer = self.answer[:-1]
+                if self._cursor_index:
+                    self.answer = (self.answer[:self._cursor_index - 1] +
+                                   self.answer[self._cursor_index:])
+                    self._cursor_index -= 1
+                history_index = len(history)
+                history_prefix = None
+                self.draw()
+            elif key == curses.KEY_DC:
+                self.answer = (self.answer[:self._cursor_index] +
+                               self.answer[self._cursor_index + 1:])
                 history_index = len(history)
                 history_prefix = None
                 self.draw()
             elif isinstance(key, str) and key.isprintable():
-                self.answer += key
+                self.answer = (self.answer[:self._cursor_index] + key +
+                               self.answer[self._cursor_index:])
+                self._cursor_index += len(key)
                 history_index = len(history)
                 history_prefix = None
                 self.draw()

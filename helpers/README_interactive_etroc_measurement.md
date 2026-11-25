@@ -21,6 +21,8 @@ UI as a top-view 3×3 grid (A1–A3, B1–B3, C1–C3). The current sample is
 highlighted when its name matches a slot. On a narrow terminal the slot map
 is compact; widen to at least 80 columns and 20 rows for longer names. The
 input marker blinks in the left prompt independently of terminal cursor settings.
+Left/Right move within the typed answer, and Backspace/Delete edit at the cursor;
+long input scrolls horizontally to keep the edit position visible.
 If lookup fails, enter another ID or `q` to continue without a map.
 No measurement data is sent to the website. In `--plain` mode, the map is
 printed once before sample entry.

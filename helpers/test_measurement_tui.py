@@ -76,8 +76,28 @@ class TUITests(unittest.TestCase):
         ui.set_gelpak(GelPakMap("gp-123", "", (None,) * 9))
         ui.prompt = "Choice: "
         ui.answer = "a"
+        ui._cursor_index = 1
         ui.draw()
         self.assertEqual(screen.cursor, (23, len("Choice: a")))
+
+    def test_left_right_insert_backspace_and_delete(self) -> None:
+        ui, screen = self.make_ui()
+        screen.keys = iter(("A", "C", curses.KEY_LEFT, "B", curses.KEY_LEFT,
+                            curses.KEY_RIGHT, curses.KEY_DC, "C", curses.KEY_LEFT,
+                            curses.KEY_BACKSPACE, "B", "\n"))
+        with patch("measurement_tui.curses.curs_set"):
+            self.assertEqual(ui.ask("Name: "), "ABC")
+
+    def test_long_answer_scrolls_to_keep_caret_visible(self) -> None:
+        ui, screen = self.make_ui()
+        ui.set_gelpak(GelPakMap("gp-123", "", (None,) * 9))
+        ui.prompt = "New sample: "
+        ui.answer = "X" * 60
+        ui._cursor_index = 60
+        ui.draw()
+        self.assertLess(screen.cursor[1], 48)
+        self.assertTrue(any(row == 23 and text.endswith("X")
+                            for row, _, text in screen.positions))
 
     def test_compact_map_still_uses_three_rows(self) -> None:
         ui, screen = self.make_ui()
