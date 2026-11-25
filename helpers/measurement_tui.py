@@ -11,6 +11,8 @@ import textwrap
 from collections import deque
 from pathlib import Path
 
+from gelpak_map import GelPakMap
+
 
 class MeasurementTUI:
     def __init__(self, screen) -> None:
@@ -22,6 +24,7 @@ class MeasurementTUI:
         self.prompt = ""
         self.answer = ""
         self.histories: dict[str, list[str]] = {}
+        self.gelpak: GelPakMap | None = None
         self.status = {
             "operator": "—", "sample_type": "—", "sample_name": "—",
             "probe": False, "bv": False, "probe_trial": 0, "bv_trial": 0,
@@ -52,6 +55,10 @@ class MeasurementTUI:
 
     def set_menu(self, menu: str) -> None:
         self.menu = menu
+        self.draw()
+
+    def set_gelpak(self, gelpak: GelPakMap | None) -> None:
+        self.gelpak = gelpak
         self.draw()
 
     def write(self, text: str) -> int:
@@ -134,11 +141,16 @@ class MeasurementTUI:
             separator_row = 7
         self._text(separator_row, 0, "─" * (width - 1))
 
-        menu_lines = textwrap.wrap(self.menu, width=width - 1, break_long_words=False) or [""]
-        menu_lines = menu_lines[:3]
+        side_panel = self.gelpak is not None and width >= 80 and height >= 20
+        menu_width = width // 2 - 2 if side_panel else width - 1
+        menu_lines = textwrap.wrap(self.menu, width=menu_width, break_long_words=False) or [""]
+        menu_lines = menu_lines[:8 if side_panel else 3]
         menu_top = height - 1 - len(menu_lines)
         log_start = separator_row + 1
-        log_height = max(0, menu_top - log_start - 1)
+        compact_map = self.gelpak is not None and not side_panel and height >= 20
+        panel_top = (max(log_start + 1, height - 12) if side_panel else
+                     menu_top - 5 if compact_map else menu_top - 1)
+        log_height = max(0, panel_top - log_start - 1)
         recent = list(self.lines)
         if self.pending:
             recent.append(self.pending)
@@ -151,10 +163,33 @@ class MeasurementTUI:
         for row, line in enumerate(reversed(wrapped[:log_height]), start=log_start):
             self._text(row, 0, line)
 
-        self._text(menu_top - 1, 0, "─" * (width - 1))
-        for row, line in enumerate(menu_lines, start=menu_top):
-            self._text(row, 0, line)
-        self._text(height - 1, 0, self.prompt + self.answer)
+        self._text(panel_top, 0, "─" * (width - 1))
+        if side_panel:
+            right_col = width // 2
+            self._text(panel_top + 1, 0, "Available actions", end_col=right_col - 1)
+            for row, line in enumerate(menu_lines, start=panel_top + 2):
+                self._text(row, 0, line, end_col=right_col - 1)
+            self._text(height - 1, 0, self.prompt + self.answer, end_col=right_col - 1)
+            title = f"Gel-Pak {self.gelpak.identifier}"
+            if self.gelpak.name and self.gelpak.name != self.gelpak.identifier:
+                title += f" — {self.gelpak.name}"
+            self._text(panel_top + 1, right_col, title)
+            for row, (line, selected) in enumerate(
+                    self.gelpak.slot_lines(state["sample_name"]), start=panel_top + 2):
+                self._text(row, right_col, line, self.red if selected else 0)
+            self._text(height - 1, right_col, "Read-only map")
+        else:
+            if compact_map:
+                self._text(panel_top + 1, 0, f"Gel-Pak: {self.gelpak.identifier} (compact; widen terminal for names)")
+                cell_width = max(1, (width - 1) // 3)
+                slots = self.gelpak.slot_lines(state["sample_name"])
+                for index, (line, selected) in enumerate(slots):
+                    self._text(panel_top + 2 + index // 3, (index % 3) * cell_width,
+                               line[:cell_width - 1], self.red if selected else 0,
+                               end_col=(index + 1) % 3 * cell_width if index % 3 != 2 else None)
+            for row, line in enumerate(menu_lines, start=menu_top):
+                self._text(row, 0, line)
+            self._text(height - 1, 0, self.prompt + self.answer)
         self.screen.refresh()
 
     def remember_history(self, key: str, value: str) -> None:

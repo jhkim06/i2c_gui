@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from interactive_etroc_measurement import EtrocController, MeasurementWorkflow, PowerSupplyController, SessionMetadata, run_measurement  # noqa: E402
+from gelpak_map import GelPakMap  # noqa: E402
 
 
 class FakePSU:
@@ -46,6 +47,7 @@ class FakeUI:
         self.current: dict = {}
         self.snapshots: list[dict] = []
         self.menus: list[str] = []
+        self.gelpak = None
 
     def update(self, **values) -> None:
         self.current.update(values)
@@ -54,11 +56,26 @@ class FakeUI:
     def set_menu(self, text: str) -> None:
         self.menus.append(text)
 
+    def set_gelpak(self, gelpak) -> None:
+        self.gelpak = gelpak
+
 
 class WorkflowTests(unittest.TestCase):
+    def test_gelpak_lookup_precedes_sample_entry(self) -> None:
+        psu, etroc, ui = FakePSU(), FakeETROC(), FakeUI()
+        gelpak = GelPakMap("gp-123", "Test carrier", ("H1",) + (None,) * 8)
+        requested = []
+        answers = iter(("Alice", "h", "y", "gp-123", "H1", "q", "q"))
+        workflow = MeasurementWorkflow(psu, etroc, lambda _: next(answers), ui=ui,
+                                       gelpak_loader=lambda name: (requested.append(name), gelpak)[1])
+        workflow.run()
+        self.assertEqual(requested, ["gp-123"])
+        self.assertIs(ui.gelpak, gelpak)
+        self.assertEqual(psu.events, ["off"])
+
     def test_sample_name_prompt_uses_history_only_for_names(self) -> None:
         psu, etroc, ui = FakePSU(), FakeETROC(), FakeUI()
-        answers = iter(("Alice", "h", "H1", "q", "q"))
+        answers = iter(("Alice", "h", "n", "H1", "q", "q"))
         searched = []
         remembered = []
         ui.ask_with_history = lambda prompt, key: (searched.append(key), next(answers))[1]
@@ -78,7 +95,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_status_follows_contact_and_uncontact(self) -> None:
         psu, etroc, ui = FakePSU(), FakeETROC(), FakeUI()
-        answers = iter(("Alice", "h", "H1", "d", "b", "d", "b", "d", "u", "d", "q", "q"))
+        answers = iter(("Alice", "h", "n", "H1", "d", "b", "d", "b", "d", "u", "d", "q", "q"))
         MeasurementWorkflow(psu, etroc, lambda _: next(answers), ui=ui).run()
         self.assertTrue(any(s.get("probe") is True and s.get("bv") is True and
                             s.get("i2c") == "DETECTED" for s in ui.snapshots))
@@ -90,7 +107,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_calibrations_iv_and_stepwise_uncontact(self) -> None:
         psu, etroc = FakePSU(), FakeETROC()
-        answers = iter(("Alice", "h", "H1", "d", "a", "b", "d", "a", "i", "b", "d", "u", "d", "q", "q"))
+        answers = iter(("Alice", "h", "n", "H1", "d", "a", "b", "d", "a", "i", "b", "d", "u", "d", "q", "q"))
         MeasurementWorkflow(psu, etroc, lambda _: next(answers)).run()
 
         self.assertEqual([event for event in etroc.events if event[0] == "calibrate"],
@@ -100,14 +117,14 @@ class WorkflowTests(unittest.TestCase):
 
     def test_uncontact_bv_and_probe_returns_before_probe(self) -> None:
         psu, etroc = FakePSU(), FakeETROC()
-        answers = iter(("Alice", "b", "E1", "d", "b", "d", "u", "d", "q", "q"))
+        answers = iter(("Alice", "b", "n", "E1", "d", "b", "d", "u", "d", "q", "q"))
         MeasurementWorkflow(psu, etroc, lambda _: next(answers)).run()
         self.assertEqual(psu.events, ["off", "on", "off", "on", "off", "off"])
         self.assertEqual(sum(event == ("detect",) for event in etroc.events), 2)
 
     def test_failed_i2c_check_switches_psu_off_and_retries(self) -> None:
         psu, etroc = FakePSU(), FakeETROC(detected=False)
-        answers = iter(("Alice", "b", "E1", "d", "q", "q"))
+        answers = iter(("Alice", "b", "n", "E1", "d", "q", "q"))
         MeasurementWorkflow(psu, etroc, lambda _: next(answers)).run()
         self.assertEqual(psu.events, ["off", "on", "off", "off"])
 

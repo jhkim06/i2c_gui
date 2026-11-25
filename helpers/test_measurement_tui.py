@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from measurement_tui import MeasurementTUI  # noqa: E402
+from gelpak_map import GelPakMap  # noqa: E402
 
 
 class FakeScreen:
@@ -47,6 +48,20 @@ class FakeScreen:
 
 
 class TUITests(unittest.TestCase):
+    def test_gelpak_panel_keeps_menu_and_highlights_selected_slot(self) -> None:
+        ui, screen = self.make_ui()
+        ui.set_gelpak(GelPakMap("gp-123", "Test carrier", ("H1",) + (None,) * 8))
+        ui.update(sample_name="H1")
+        ui.set_menu("Probe: [a] Auto-calibration [b] Contact BV tip")
+        self.assertTrue(any(row >= 12 and col == 50 and text.startswith("A1  H1")
+                            for row, col, text in screen.positions))
+        self.assertTrue(any(row >= 12 and col == 50 and text.startswith("C3")
+                            for row, col, text in screen.positions))
+        self.assertTrue(any(row >= 12 and col == 0 and "Probe:" in text
+                            for row, col, text in screen.positions))
+        self.assertTrue(any(text == "A1  H1" and attr == ui.red
+                            for _, text, attr in screen.drawn))
+
     def make_ui(self) -> tuple[MeasurementTUI, FakeScreen]:
         screen = FakeScreen()
         with patch("measurement_tui.curses.has_colors", return_value=True), \

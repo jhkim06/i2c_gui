@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from keysight_e36312a_interactive import DEFAULT_PRESETS, USBTMCInstrument, discover_device
+from gelpak_map import GelPakMap, fetch_gelpak
 
 
 HELPERS_DIR = Path(__file__).resolve().parent
@@ -151,11 +152,13 @@ class EtrocController:
 
 class MeasurementWorkflow:
     def __init__(self, psu: PowerSupplyController, etroc: EtrocController,
-                 ask: Callable[[str], str] = input, ui=None) -> None:
+                 ask: Callable[[str], str] = input, ui=None,
+                 gelpak_loader: Callable[[str], GelPakMap] = fetch_gelpak) -> None:
         self.psu = psu
         self.etroc = etroc
         self.ask = ask
         self.ui = ui
+        self.gelpak_loader = gelpak_loader
 
     def status(self, **values) -> None:
         if self.ui is not None:
@@ -287,6 +290,24 @@ class MeasurementWorkflow:
         operator = self.required("Operator name: ")
         self.menu("[b] Bare ETROC   [h] Hybrid")
         sample_type = "Bare ETROC" if self.choice("[b] Bare ETROC or [h] Hybrid? ", ("b", "h")) == "b" else "Hybrid"
+        self.menu("Measure samples from a Gel-Pak? [y] Yes  [n] No")
+        if self.choice("Samples in a Gel-Pak? [y/n]: ", ("y", "n")) == "y":
+            while True:
+                identifier = self.required("Gel-Pak ID (q to continue without map): ")
+                if identifier.lower() == "q":
+                    break
+                try:
+                    gelpak = self.gelpak_loader(identifier)
+                except (ValueError, RuntimeError) as exc:
+                    print(f"Could not load Gel-Pak map: {exc}")
+                    continue
+                if self.ui is not None and hasattr(self.ui, "set_gelpak"):
+                    self.ui.set_gelpak(gelpak)
+                else:
+                    print(f"Gel-Pak {gelpak.name or gelpak.identifier}:")
+                    for line, _ in gelpak.slot_lines():
+                        print(f"  {line}")
+                break
         self.status(operator=operator, sample_type=sample_type, phase="Select sample")
         sample_menu = ("Enter a new sample name (↑/↓ history), or q to exit"
                        if self.ui is not None and hasattr(self.ui, "ask_with_history")

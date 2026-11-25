@@ -13,7 +13,17 @@ source ~/ETL/i2c_gui/helpers/setup_i2c_measurement_env.sh
 python interactive_etroc_measurement.py
 ```
 
-The program asks for the operator, sample type, and each sample name. Enter `q`
+The program asks for the operator, sample type, whether samples are in a Gel-Pak,
+and each sample name. For a Gel-Pak session, enter its registry ID (for example,
+`gp-e-039`). The separate `gelpak_map.py` helper fetches the public nine-slot
+map with a read-only GET and displays A1–C3 at the lower right of the terminal
+UI. The current sample is highlighted when its name matches a slot. On a narrow
+terminal the slot map is compact; widen to at least 80 columns and 20 rows for
+full names. If lookup fails, enter another ID or `q` to continue without a map.
+No measurement data is sent to the website. In `--plain` mode, the map is
+printed once before sample entry.
+
+Enter `q`
 at the sample-name prompt to exit.
 In the terminal UI, Up/Down at the sample-name prompt recalls names from the
 current run; typing a prefix first searches matching names. Hybrid and Bare
