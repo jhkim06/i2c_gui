@@ -144,11 +144,11 @@ class MeasurementTUI:
         side_panel = self.gelpak is not None and width >= 80 and height >= 20
         menu_width = width // 2 - 2 if side_panel else width - 1
         menu_lines = textwrap.wrap(self.menu, width=menu_width, break_long_words=False) or [""]
-        menu_lines = menu_lines[:8 if side_panel else 3]
+        menu_lines = menu_lines[:4 if side_panel else 3]
         menu_top = height - 1 - len(menu_lines)
         log_start = separator_row + 1
         compact_map = self.gelpak is not None and not side_panel and height >= 20
-        panel_top = (max(log_start + 1, height - 12) if side_panel else
+        panel_top = (max(log_start + 1, height - 7) if side_panel else
                      menu_top - 5 if compact_map else menu_top - 1)
         log_height = max(0, panel_top - log_start - 1)
         recent = list(self.lines)
@@ -169,27 +169,37 @@ class MeasurementTUI:
             self._text(panel_top + 1, 0, "Available actions", end_col=right_col - 1)
             for row, line in enumerate(menu_lines, start=panel_top + 2):
                 self._text(row, 0, line, end_col=right_col - 1)
-            self._text(height - 1, 0, self.prompt + self.answer, end_col=right_col - 1)
+            input_col = self._text(height - 1, 0, self.prompt + self.answer,
+                                   end_col=right_col - 1)
             title = f"Gel-Pak {self.gelpak.identifier}"
             if self.gelpak.name and self.gelpak.name != self.gelpak.identifier:
                 title += f" — {self.gelpak.name}"
             self._text(panel_top + 1, right_col, title)
-            for row, (line, selected) in enumerate(
-                    self.gelpak.slot_lines(state["sample_name"]), start=panel_top + 2):
-                self._text(row, right_col, line, self.red if selected else 0)
-            self._text(height - 1, right_col, "Read-only map")
+            cell_width = max(1, (width - 1 - right_col) // 3)
+            for grid_row, cells in enumerate(self.gelpak.grid_rows(state["sample_name"])):
+                for grid_col, (line, selected) in enumerate(cells):
+                    self._text(panel_top + 2 + grid_row, right_col + grid_col * cell_width,
+                               line[:cell_width - 1], self.red if selected else 0,
+                               end_col=right_col + (grid_col + 1) * cell_width
+                               if grid_col < 2 else None)
+            self._text(height - 1, right_col, "Top view · read-only")
         else:
             if compact_map:
                 self._text(panel_top + 1, 0, f"Gel-Pak: {self.gelpak.identifier} (compact; widen terminal for names)")
                 cell_width = max(1, (width - 1) // 3)
-                slots = self.gelpak.slot_lines(state["sample_name"])
-                for index, (line, selected) in enumerate(slots):
-                    self._text(panel_top + 2 + index // 3, (index % 3) * cell_width,
-                               line[:cell_width - 1], self.red if selected else 0,
-                               end_col=(index + 1) % 3 * cell_width if index % 3 != 2 else None)
+                for grid_row, cells in enumerate(self.gelpak.grid_rows(state["sample_name"])):
+                    for grid_col, (line, selected) in enumerate(cells):
+                        self._text(panel_top + 2 + grid_row, grid_col * cell_width,
+                                   line[:cell_width - 1], self.red if selected else 0,
+                                   end_col=(grid_col + 1) * cell_width if grid_col < 2 else None)
             for row, line in enumerate(menu_lines, start=menu_top):
                 self._text(row, 0, line)
-            self._text(height - 1, 0, self.prompt + self.answer)
+            input_col = self._text(height - 1, 0, self.prompt + self.answer)
+        if self.prompt:
+            try:
+                self.screen.move(height - 1, min(input_col, menu_width - 1))
+            except curses.error:
+                pass
         self.screen.refresh()
 
     def remember_history(self, key: str, value: str) -> None:
@@ -213,9 +223,12 @@ class MeasurementTUI:
         # Menus should wait for a real keypress even if input mode changed.
         self.screen.timeout(-1)
         try:
-            curses.curs_set(1)
+            curses.curs_set(2)  # Request a blinking cursor where the terminal supports it.
         except curses.error:
-            pass
+            try:
+                curses.curs_set(1)
+            except curses.error:
+                pass
         while True:
             try:
                 key = self.screen.get_wch()

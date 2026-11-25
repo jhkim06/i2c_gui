@@ -22,6 +22,7 @@ class FakeScreen:
         self.positions: list[tuple[int, int, str]] = []
         self.keys = iter(())
         self.input_timeout = None
+        self.cursor = None
 
     def keypad(self, enabled: bool) -> None:
         pass
@@ -40,6 +41,9 @@ class FakeScreen:
     def refresh(self) -> None:
         pass
 
+    def move(self, row: int, col: int) -> None:
+        self.cursor = (row, col)
+
     def get_wch(self):
         return next(self.keys)
 
@@ -50,17 +54,46 @@ class FakeScreen:
 class TUITests(unittest.TestCase):
     def test_gelpak_panel_keeps_menu_and_highlights_selected_slot(self) -> None:
         ui, screen = self.make_ui()
-        ui.set_gelpak(GelPakMap("gp-123", "Test carrier", ("H1",) + (None,) * 8))
+        ui.set_gelpak(GelPakMap("gp-123", "Test carrier",
+                                    ("H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9")))
         ui.update(sample_name="H1")
         ui.set_menu("Probe: [a] Auto-calibration [b] Contact BV tip")
-        self.assertTrue(any(row >= 12 and col == 50 and text.startswith("A1  H1")
-                            for row, col, text in screen.positions))
-        self.assertTrue(any(row >= 12 and col == 50 and text.startswith("C3")
-                            for row, col, text in screen.positions))
-        self.assertTrue(any(row >= 12 and col == 0 and "Probe:" in text
+        slots = [(row, col, text) for row, col, text in screen.positions
+                 if text[:2] in {f"{r}{c}" for r in "ABC" for c in "123"}]
+        self.assertEqual([(row, col) for row, col, _ in slots[:3]],
+                         [(19, 50), (19, 66), (19, 82)])
+        self.assertEqual([(row, col) for row, col, _ in slots[3:6]],
+                         [(20, 50), (20, 66), (20, 82)])
+        self.assertEqual([(row, col) for row, col, _ in slots[6:]],
+                         [(21, 50), (21, 66), (21, 82)])
+        self.assertTrue(any(row >= 17 and col == 0 and "Probe:" in text
                             for row, col, text in screen.positions))
         self.assertTrue(any(text == "A1  H1" and attr == ui.red
                             for _, text, attr in screen.drawn))
+
+    def test_prompt_cursor_remains_on_left_after_map_draw(self) -> None:
+        ui, screen = self.make_ui()
+        ui.set_gelpak(GelPakMap("gp-123", "", (None,) * 9))
+        ui.prompt = "Choice: "
+        ui.answer = "a"
+        ui.draw()
+        self.assertEqual(screen.cursor, (23, len("Choice: a")))
+
+    def test_compact_map_still_uses_three_rows(self) -> None:
+        ui, screen = self.make_ui()
+        screen.width = 60
+        ui.set_gelpak(GelPakMap("gp-123", "", tuple(f"H{i}" for i in range(9))))
+        slots = [(row, text[:2]) for row, _, text in screen.positions
+                 if text[:2] in {f"{r}{c}" for r in "ABC" for c in "123"}]
+        self.assertEqual([[text for row, text in slots if row == line] for line in (19, 20, 21)],
+                         [["A1", "A2", "A3"], ["B1", "B2", "B3"], ["C1", "C2", "C3"]])
+
+    def test_ask_requests_visible_blinking_cursor(self) -> None:
+        ui, screen = self.make_ui()
+        screen.keys = iter(("a", "\n"))
+        with patch("measurement_tui.curses.curs_set") as curs_set:
+            self.assertEqual(ui.ask("Choice: "), "a")
+        self.assertIn(2, [call.args[0] for call in curs_set.call_args_list])
 
     def make_ui(self) -> tuple[MeasurementTUI, FakeScreen]:
         screen = FakeScreen()

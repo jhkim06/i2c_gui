@@ -29,6 +29,11 @@ class GelPakMap:
             lines.append((f"{coordinate}  {sample or '— empty —'}", selected))
         return lines
 
+    def grid_rows(self, selected_sample: str = "") -> list[list[tuple[str, bool]]]:
+        """Group A1–A3, B1–B3, C1–C3 as on the physical carrier."""
+        slots = self.slot_lines(selected_sample)
+        return [slots[start:start + 3] for start in (0, 3, 6)]
+
 
 def fetch_gelpak(identifier: str, timeout: float = 5.0) -> GelPakMap:
     """Fetch one public map. This function issues GET only and uses no login."""

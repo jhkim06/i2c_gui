@@ -17,9 +17,11 @@ The program asks for the operator, sample type, whether samples are in a Gel-Pak
 and each sample name. For a Gel-Pak session, enter its registry ID (for example,
 `gp-e-039`). The separate `gelpak_map.py` helper fetches the public nine-slot
 map with a read-only GET and displays A1–C3 at the lower right of the terminal
-UI. The current sample is highlighted when its name matches a slot. On a narrow
-terminal the slot map is compact; widen to at least 80 columns and 20 rows for
-full names. If lookup fails, enter another ID or `q` to continue without a map.
+UI as a top-view 3×3 grid (A1–A3, B1–B3, C1–C3). The current sample is
+highlighted when its name matches a slot. On a narrow terminal the slot map
+is compact; widen to at least 80 columns and 20 rows for longer names. The
+input cursor stays in the left prompt and requests blinking where supported
+by the terminal. If lookup fails, enter another ID or `q` to continue without a map.
 No measurement data is sent to the website. In `--plain` mode, the map is
 printed once before sample entry.
 
