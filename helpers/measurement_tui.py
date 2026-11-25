@@ -8,6 +8,7 @@ import selectors
 import signal
 import subprocess
 import textwrap
+import time
 from collections import deque
 from pathlib import Path
 
@@ -23,6 +24,7 @@ class MeasurementTUI:
         self.menu = ""
         self.prompt = ""
         self.answer = ""
+        self._cursor_on = False
         self.histories: dict[str, list[str]] = {}
         self.gelpak: GelPakMap | None = None
         self.status = {
@@ -196,6 +198,9 @@ class MeasurementTUI:
                 self._text(row, 0, line)
             input_col = self._text(height - 1, 0, self.prompt + self.answer)
         if self.prompt:
+            if self._cursor_on and input_col < menu_width - 1:
+                self._text(height - 1, input_col, " ", curses.A_REVERSE,
+                           end_col=menu_width - 1)
             try:
                 self.screen.move(height - 1, min(input_col, menu_width - 1))
             except curses.error:
@@ -219,23 +224,28 @@ class MeasurementTUI:
         history_index = len(history)
         history_prefix: str | None = None
         draft = ""
+        self._cursor_on = True
         self.draw()
-        # Menus should wait for a real keypress even if input mode changed.
-        self.screen.timeout(-1)
+        # A software cursor blinks even when tmux/the terminal ignores curs_set(2).
+        self.screen.timeout(450)
         try:
-            curses.curs_set(2)  # Request a blinking cursor where the terminal supports it.
+            curses.curs_set(0)
         except curses.error:
-            try:
-                curses.curs_set(1)
-            except curses.error:
-                pass
+            pass
         while True:
+            started = time.monotonic()
             try:
                 key = self.screen.get_wch()
             except curses.error as exc:
-                # EOF/disconnected terminal can still fail even in blocking
-                # mode. Let the workflow perform its normal PSU shutdown.
-                raise EOFError("Terminal input unavailable") from exc
+                if time.monotonic() - started < 0.2:
+                    # A real timeout takes roughly 450 ms. An immediate error
+                    # means the input stream is unavailable, not an idle user.
+                    self.screen.timeout(-1)
+                    raise EOFError("Terminal input unavailable") from exc
+                self._cursor_on = not self._cursor_on
+                self.draw()
+                continue
+            self._cursor_on = True
             if key == curses.KEY_RESIZE:
                 self.draw()
             elif key == curses.KEY_UP and history:
@@ -263,11 +273,9 @@ class MeasurementTUI:
                 result = self.answer
                 self.prompt = ""
                 self.answer = ""
+                self._cursor_on = False
+                self.screen.timeout(-1)
                 self.draw()
-                try:
-                    curses.curs_set(0)
-                except curses.error:
-                    pass
                 return result
             elif key in ("\b", "\x7f", curses.KEY_BACKSPACE):
                 self.answer = self.answer[:-1]

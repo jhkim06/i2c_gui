@@ -88,12 +88,34 @@ class TUITests(unittest.TestCase):
         self.assertEqual([[text for row, text in slots if row == line] for line in (19, 20, 21)],
                          [["A1", "A2", "A3"], ["B1", "B2", "B3"], ["C1", "C2", "C3"]])
 
-    def test_ask_requests_visible_blinking_cursor(self) -> None:
+    def test_ask_blinks_software_cursor_during_idle_timeout(self) -> None:
         ui, screen = self.make_ui()
-        screen.keys = iter(("a", "\n"))
+        ui.set_gelpak(GelPakMap("gp-123", "", (None,) * 9))
+        keys = iter(("a", "\n"))
+        calls = 0
+        frames = []
+        original_draw = ui.draw
+
+        def read_key():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                time.sleep(0.46)
+                raise curses.error("no input")
+            return next(keys)
+
+        def observe_draw():
+            frames.append(ui._cursor_on)
+            original_draw()
+
+        screen.get_wch = read_key
+        ui.draw = observe_draw
         with patch("measurement_tui.curses.curs_set") as curs_set:
             self.assertEqual(ui.ask("Choice: "), "a")
-        self.assertIn(2, [call.args[0] for call in curs_set.call_args_list])
+        self.assertIn(0, [call.args[0] for call in curs_set.call_args_list])
+        self.assertEqual(frames[:2], [True, False])
+        self.assertEqual(screen.input_timeout, -1)
+        self.assertEqual(screen.cursor, (23, len("Choice: a")))
 
     def make_ui(self) -> tuple[MeasurementTUI, FakeScreen]:
         screen = FakeScreen()
