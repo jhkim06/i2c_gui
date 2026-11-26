@@ -812,10 +812,10 @@ def plot_iv_curve(
             ax.set_xlabel("Bias Voltage (V)", fontsize=16)
             ax.set_ylabel("Current (μA)", fontsize=16)
             ax.tick_params(axis="both", labelsize=13)
-            hep.cms.text(loc=0, ax=ax, fontsize=17, text="ETL Hybrid")
+            hep.cms.text(loc=0, ax=ax, fontsize=12, text="ETL Hybrid")
             if save_notes:
-                ax.text(1.0, 1.02, save_notes, transform=ax.transAxes,
-                        ha="right", va="bottom", fontsize=17)
+                ax.text(1.0, 1.0, save_notes, transform=ax.transAxes,
+                        ha="right", va="bottom", fontsize=12)
             ax.grid(True, color="#d9d9d9", linewidth=1.0)
             ax.set_axisbelow(True)
             fig.tight_layout()
