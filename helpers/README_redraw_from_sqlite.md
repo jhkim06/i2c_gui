@@ -6,11 +6,15 @@ With the measurement virtual environment active:
 source ~/ETL/i2c_gui/helpers/setup_i2c_measurement_env.sh
 python redraw_BL_NW_2D_from_sqlite.py --all --dry-run
 python redraw_BL_NW_2D_from_sqlite.py --all
+python redraw_BL_NW_2D_from_sqlite.py --all --only iv
+python redraw_BL_NW_2D_from_sqlite.py --all --only bl-nw
 ```
 
 `--all` reads `BaselineHistory.sqlite` and `IVHistory.sqlite` from
 `ETROC_SQLITE_OUTPUT_DIR` and writes BL/NW 2D maps, BL/NW 1D histograms, and
 IV curves under `ETROC_LOCAL_FIGURE_ROOT/by_hybrid_name/<chip_name>/`.
+`--only iv` or `--only bl-nw` limits the batch to one plot type and only
+requires that type's SQLite history. Use either option together with `--all`.
 It uses the acquisition scripts' plotting functions and filename patterns.
 Use `--chip-name NAME` to limit the batch, `--iv-sweep up|down|both` to choose
 the IV direction, and `--overwrite` to replace existing PNGs. By default,

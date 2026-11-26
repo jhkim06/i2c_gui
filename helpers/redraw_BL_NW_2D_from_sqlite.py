@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Redraw saved BL/NW and IV plots without accessing measurement hardware.
 
-Use --all for both histories. The original single-scan --chip-name/--start/
---end interface remains available.
+Use --all for both histories, optionally with --only iv or --only bl-nw.
+The original single-scan --chip-name/--start/--end interface remains available.
 """
 
 from __future__ import annotations
@@ -164,6 +164,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--all", action="store_true",
                         help="Redraw all complete BL/NW scans and IV runs")
+    parser.add_argument("--only", choices=("iv", "bl-nw"),
+                        help="With --all, redraw only IV runs or BL/NW scans")
     parser.add_argument("--output-dir", type=Path,
                         default=Path(os.environ.get("ETROC_SQLITE_OUTPUT_DIR",
                                                      Path(__file__).parent / "output")))
@@ -185,6 +187,8 @@ def main() -> int:
             parser.error("--start, --end, --db and --outdir are single-scan options")
         if args.figure_root is None or not args.figure_root.is_absolute():
             parser.error("set ETROC_LOCAL_FIGURE_ROOT or pass an absolute --figure-root")
+    elif args.only:
+        parser.error("--only requires --all")
     elif not (args.chip_name and args.start and args.end):
         parser.error("single-scan mode requires --chip-name, --start and --end")
 
@@ -192,21 +196,25 @@ def main() -> int:
     iv_path = args.output_dir / "IVHistory.sqlite"
     count = skipped = 0
     if args.all:
-        if not baseline_path.is_file() or not iv_path.is_file():
-            parser.error("both SQLite histories must exist in --output-dir")
-        seen_stamps: set[tuple[str, str]] = set()
-        for rows in baseline_scans(baseline_path, args.chip_name):
-            if not valid_scan(rows):
-                skipped += 1
-                continue
-            stamp_key = (str(rows[0]["chip_name"]), baseline_timestamp(rows))
-            count += draw_baseline(rows, figure_dir(args.figure_root, str(rows[0]["chip_name"])),
-                                   dry_run=args.dry_run, overwrite=args.overwrite,
-                                   duplicate_timestamp=stamp_key in seen_stamps)
-            seen_stamps.add(stamp_key)
-        for rows in iv_runs(iv_path, args.chip_name):
-            count += draw_iv(rows, figure_dir(args.figure_root, str(rows[0]["chip_name"] or "unknown")),
-                             sweep=args.iv_sweep, dry_run=args.dry_run, overwrite=args.overwrite)
+        if args.only != "iv" and not baseline_path.is_file():
+            parser.error(f"BL/NW SQLite history not found: {baseline_path}")
+        if args.only != "bl-nw" and not iv_path.is_file():
+            parser.error(f"IV SQLite history not found: {iv_path}")
+        if args.only != "iv":
+            seen_stamps: set[tuple[str, str]] = set()
+            for rows in baseline_scans(baseline_path, args.chip_name):
+                if not valid_scan(rows):
+                    skipped += 1
+                    continue
+                stamp_key = (str(rows[0]["chip_name"]), baseline_timestamp(rows))
+                count += draw_baseline(rows, figure_dir(args.figure_root, str(rows[0]["chip_name"])),
+                                       dry_run=args.dry_run, overwrite=args.overwrite,
+                                       duplicate_timestamp=stamp_key in seen_stamps)
+                seen_stamps.add(stamp_key)
+        if args.only != "bl-nw":
+            for rows in iv_runs(iv_path, args.chip_name):
+                count += draw_iv(rows, figure_dir(args.figure_root, str(rows[0]["chip_name"] or "unknown")),
+                                 sweep=args.iv_sweep, dry_run=args.dry_run, overwrite=args.overwrite)
     else:
         with connect_read_only(baseline_path) as connection:
             rows = connection.execute(
