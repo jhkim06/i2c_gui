@@ -288,49 +288,105 @@ class MeasurementWorkflow:
                     stage = "probe_contact"
 
     def run(self) -> None:
-        operator = self.required("Operator name: ")
-        self.menu("[b] Bare ETROC   [h] Hybrid")
-        sample_type = "Bare ETROC" if self.choice("[b] Bare ETROC or [h] Hybrid? ", ("b", "h")) == "b" else "Hybrid"
-        self.menu("Measure samples from a Gel-Pak? [y] Yes  [n] No")
-        if self.choice("Samples in a Gel-Pak? [y/n]: ", ("y", "n")) == "y":
-            while True:
-                identifier = self.required("Gel-Pak ID (q to continue without map): ")
-                if identifier.lower() == "q":
-                    break
-                try:
-                    gelpak = self.gelpak_loader(identifier)
-                except (ValueError, RuntimeError) as exc:
-                    print(f"Could not load Gel-Pak map: {exc}")
-                    continue
-                if self.ui is not None and hasattr(self.ui, "set_gelpak"):
-                    self.ui.set_gelpak(gelpak)
-                else:
-                    print(f"Gel-Pak {gelpak.name or gelpak.identifier}:")
-                    for line, _ in gelpak.slot_lines():
-                        print(f"  {line}")
-                break
-        self.status(operator=operator, sample_type=sample_type, phase="Select sample")
-        sample_menu = ("Enter a new sample name (↑/↓ history), or q to exit"
-                       if self.ui is not None and hasattr(self.ui, "ask_with_history")
-                       else "Enter a new sample name, or q to exit")
-        self.menu(sample_menu)
+        """Navigate selection prompts with q; measurement contact menus stay separate."""
+        stage = "operator"
+        operator = ""
+        sample_type = ""
+        gelpak_mode = False
+        gelpak = None
         while True:
-            entered_name = self.required(f"New {sample_type} name (q to exit): ",
-                                         history_key=sample_type)
-            if entered_name.lower() == "q":
-                return
-            try:
-                sample_name = canonical_sample_name(entered_name)
-            except ValueError as exc:
-                print(f"Invalid sample name: {exc}")
-                continue
-            if entered_name != sample_name:
-                print(f"Using sample name {sample_name} for plots, directories, and SQLite")
-            if self.ui is not None and hasattr(self.ui, "remember_history"):
-                self.ui.remember_history(sample_type, sample_name)
-            self.sample(operator, sample_type, sample_name)
-            self.status(sample_name="—", probe=False, bv=False, i2c="NOT CHECKED", phase="Select sample")
-            self.menu(sample_menu)
+            if stage == "operator":
+                if self.ui is not None and hasattr(self.ui, "set_gelpak"):
+                    self.ui.set_gelpak(None)
+                self.status(operator="—", sample_type="—", sample_name="—", phase="Select operator")
+                operator = self.required("Operator name (q to exit): ")
+                if operator.lower() == "q":
+                    return
+                stage = "sample_type"
+            elif stage == "sample_type":
+                self.status(operator=operator, sample_type="—", phase="Select sample type")
+                self.menu("[b] Bare ETROC   [h] Hybrid   [q] Operator name")
+                answer = self.choice("[b] Bare ETROC, [h] Hybrid, or [q] back? ",
+                                     ("b", "h", "q"))
+                if answer == "q":
+                    stage = "operator"
+                    continue
+                sample_type = "Bare ETROC" if answer == "b" else "Hybrid"
+                stage = "gelpak_choice"
+            elif stage == "gelpak_choice":
+                self.status(sample_type=sample_type, sample_name="—", phase="Select Gel-Pak mode")
+                self.menu("Measure samples from a Gel-Pak? [y] Yes  [n] No  [q] Back")
+                answer = self.choice("Samples in a Gel-Pak? [y/n/q]: ", ("y", "n", "q"))
+                if answer == "q":
+                    stage = "sample_type"
+                    continue
+                gelpak_mode = answer == "y"
+                gelpak = None
+                if not gelpak_mode:
+                    if self.ui is not None and hasattr(self.ui, "set_gelpak"):
+                        self.ui.set_gelpak(None)
+                    if self.ui is not None and hasattr(self.ui, "set_history"):
+                        self.ui.set_history(sample_type, [])
+                stage = "gelpak_id" if gelpak_mode else "sample_name"
+            elif stage == "gelpak_id":
+                if self.ui is not None and hasattr(self.ui, "set_gelpak"):
+                    self.ui.set_gelpak(None)
+                self.status(sample_name="—", phase="Select Gel-Pak")
+                self.menu("Enter a Gel-Pak ID, [n] no map, [q] Gel-Pak yes/no")
+                identifier = self.required("Gel-Pak ID (n: no map, q: back): ")
+                if identifier.lower() == "q":
+                    stage = "gelpak_choice"
+                    continue
+                if identifier.lower() == "n":
+                    gelpak = None
+                else:
+                    try:
+                        gelpak = self.gelpak_loader(identifier)
+                    except (ValueError, RuntimeError) as exc:
+                        print(f"Could not load Gel-Pak map: {exc}")
+                        continue
+                    if self.ui is not None and hasattr(self.ui, "set_gelpak"):
+                        self.ui.set_gelpak(gelpak)
+                    else:
+                        print(f"Gel-Pak {gelpak.name or gelpak.identifier}:")
+                        for line, _ in gelpak.slot_lines():
+                            print(f"  {line}")
+                if self.ui is not None and hasattr(self.ui, "set_history"):
+                    names = []
+                    for slot in (gelpak.slots if gelpak is not None else ()):
+                        if slot:
+                            try:
+                                names.append(canonical_sample_name(slot))
+                            except ValueError:
+                                print(f"Skipping invalid Gel-Pak sample name: {slot}")
+                    self.ui.set_history(sample_type, names)
+                stage = "sample_name"
+            else:
+                self.status(operator=operator, sample_type=sample_type, sample_name="—",
+                            probe=False, bv=False, i2c="NOT CHECKED", phase="Select sample")
+                back_label = "Gel-Pak ID" if gelpak_mode else "Gel-Pak yes/no"
+                history_hint = " (↑/↓ Gel-Pak names and history)" if gelpak and self.ui is not None else ""
+                self.menu(f"Enter a new sample name{history_hint}, or q for {back_label}")
+                entered_name = self.required(f"New {sample_type} name (q: back): ",
+                                             history_key=sample_type)
+                if entered_name.lower() == "q":
+                    self.psu.off()
+                    self.status(psu="OFF", sample_name="—", probe=False, bv=False,
+                                i2c="NOT CHECKED")
+                    stage = "gelpak_id" if gelpak_mode else "gelpak_choice"
+                    continue
+                try:
+                    sample_name = canonical_sample_name(entered_name)
+                except ValueError as exc:
+                    print(f"Invalid sample name: {exc}")
+                    continue
+                if entered_name != sample_name:
+                    print(f"Using sample name {sample_name} for plots, directories, and SQLite")
+                if self.ui is not None and hasattr(self.ui, "remember_history"):
+                    self.ui.remember_history(sample_type, sample_name)
+                self.sample(operator, sample_type, sample_name)
+                self.status(sample_name="—", probe=False, bv=False, i2c="NOT CHECKED",
+                            phase="Select sample")
 
 
 def run_measurement(args, ui=None) -> int:

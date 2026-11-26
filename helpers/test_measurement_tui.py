@@ -262,6 +262,17 @@ class TUITests(unittest.TestCase):
         with patch("measurement_tui.curses.curs_set"):
             self.assertEqual(ui.ask_with_history("New Bare ETROC: ", "Bare ETROC"), "E1")
 
+    def test_gelpak_names_replace_up_down_choices(self) -> None:
+        ui, screen = self.make_ui()
+        ui.set_history("Hybrid", ["W15_001", "W15_002"])
+        screen.keys = iter((curses.KEY_UP, "\n"))
+        with patch("measurement_tui.curses.curs_set"):
+            self.assertEqual(ui.ask_with_history("New Hybrid: ", "Hybrid"), "W15_002")
+        ui.set_history("Hybrid", ["W16_003"])
+        screen.keys = iter((curses.KEY_UP, "\n"))
+        with patch("measurement_tui.curses.curs_set"):
+            self.assertEqual(ui.ask_with_history("New Hybrid: ", "Hybrid"), "W16_003")
+
     def test_sample_history_prefix_finds_latest_match(self) -> None:
         ui, screen = self.make_ui()
         for name in ("W15_001", "Other", "W15_002"):

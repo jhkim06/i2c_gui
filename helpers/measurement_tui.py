@@ -241,6 +241,10 @@ class MeasurementTUI:
         history.append(value)
         del history[:-100]
 
+    def set_history(self, key: str, values: list[str]) -> None:
+        """Replace the choices when a new Gel-Pak is selected."""
+        self.histories[key] = list(dict.fromkeys(values))[-100:]
+
     def ask_with_history(self, prompt: str, key: str) -> str:
         return self.ask(prompt, history_key=key)
 

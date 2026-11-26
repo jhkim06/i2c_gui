@@ -24,12 +24,16 @@ is compact; widen to at least 80 columns and 20 rows for longer names. The
 input marker blinks in the left prompt independently of terminal cursor settings.
 Left/Right move within the typed answer, and Backspace/Delete edit at the cursor;
 long input scrolls horizontally to keep the edit position visible.
-If lookup fails, enter another ID or `q` to continue without a map.
+If lookup fails, enter another ID. At the Gel-Pak ID prompt, `n` continues
+without a map. `q` goes back one selection prompt: sample name →
+Gel-Pak ID (or Gel-Pak yes/no when Gel-Pak mode is off) → Gel-Pak yes/no →
+sample type → operator name. `q` at operator-name entry exits the workflow.
 No measurement data is sent to the website. In `--plain` mode, the map is
 printed once before sample entry.
 
-Enter `q`
-at the sample-name prompt to exit.
+When measuring from a Gel-Pak, enter `q` at the sample-name prompt to return
+to Gel-Pak selection. This lets you load a new map for the next carrier without
+restarting the program.
 Sample names entered here must follow `W##-number` or `W##_###`. Only the
 part before an optional `:` is used: `W15-19:HPK-W64-12` becomes `W15_019`,
 and `W15-10` becomes `W15_010`. This canonical `W##_###` name is shown in
@@ -37,9 +41,11 @@ the status, stored in prompt history, and passed as `chip_name` to both
 measurement scripts. Their SQLite records, plot filenames, and per-sample
 figure directories therefore use the same canonical name. Invalid names are
 rejected before probe contact begins.
-In the terminal UI, Up/Down at the sample-name prompt recalls names from the
-current run; typing a prefix first searches matching names. Hybrid and Bare
-ETROC histories are separate, and `q` is not stored.
+In the terminal UI, Up/Down at the sample-name prompt cycles through all valid
+names in the selected Gel-Pak map, as well as names entered for that carrier.
+Typing a prefix first searches matching names. Loading another Gel-Pak replaces
+these choices with its names. In `--plain` mode, type a name from the printed
+map instead; arrow-key selection requires the terminal UI. `q` is not stored.
 
 The default PSU device is auto-detected; use
 `--psu-device /dev/usbtmc0` if necessary. The E36312A CH1/CH2 presets come from
