@@ -785,6 +785,7 @@ def plot_iv_curve(
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import mplhep as hep
 
     selected_rows = select_iv_sweep_rows(rows, sweep)
     if not selected_rows:
@@ -800,21 +801,28 @@ def plot_iv_curve(
     hv = [point[0] for point in points]
     current_uA = [point[1] for point in points]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(hv, current_uA, "o-", color="#4285F4", linewidth=2.0, markersize=4)
-    ax.set_xlabel("HV (V)")
-    ax.set_ylabel(f"{chip_name} current (µA)")
-    title = f"{chip_name} vs HV (V)"
-    if save_notes:
-        title += f"\n{save_notes}"
-    title += f"\nIV sweep: {sweep} ({len(selected_rows)}/{len([row for row in rows if row.get('before_current_A') is not None])} points)"
-    ax.set_title(title)
-    ax.grid(True, color="#d9d9d9", linewidth=1.0)
-    ax.set_axisbelow(True)
-    fig.tight_layout()
-    plot_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(plot_path, dpi=150)
-    plt.close(fig)
+    # The BL/NW figures use the CMS style and this same collaboration label.
+    # Scope rcParams so a caller redrawing several kinds of plot in one process
+    # does not accidentally change the style of subsequent figures.
+    with matplotlib.rc_context():
+        hep.style.use("CMS")
+        fig, ax = plt.subplots(figsize=(8, 6))
+        try:
+            ax.plot(hv, current_uA, "o-", color="#4285F4", linewidth=2.0, markersize=4)
+            ax.set_xlabel("Bias Voltage (V)", fontsize=16)
+            ax.set_ylabel("Current (μA)", fontsize=16)
+            ax.tick_params(axis="both", labelsize=13)
+            hep.cms.text(loc=0, ax=ax, fontsize=17, text="ETL Hybrid")
+            if save_notes:
+                ax.text(1.0, 1.02, save_notes, transform=ax.transAxes,
+                        ha="right", va="bottom", fontsize=17)
+            ax.grid(True, color="#d9d9d9", linewidth=1.0)
+            ax.set_axisbelow(True)
+            fig.tight_layout()
+            plot_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(plot_path, dpi=150)
+        finally:
+            plt.close(fig)
     return plot_path
 
 

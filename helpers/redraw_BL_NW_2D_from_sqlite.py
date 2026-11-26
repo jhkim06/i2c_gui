@@ -107,11 +107,15 @@ def draw_baseline(rows, directory: Path, *, dry_run: bool, overwrite: bool,
     pivot = data.pivot(index="row", columns="col", values=["baseline", "noise_width"])
     notes = data["save_notes"].dropna().unique()
     note = str(notes[0]) if len(notes) else ""
+    import matplotlib as mpl
     import matplotlib.pyplot as plt
 
     try:
-        i2c_connection.make_BL_NW_2D_maps(pivot, chip, note, directory, stamp)
-        i2c_connection.make_BL_NW_1D_hists(data, chip, note, directory, stamp)
+        # The BL/NW helpers apply the CMS rcParams globally. In a batch this
+        # would otherwise leak into later IV figures (normally a new process).
+        with mpl.rc_context():
+            i2c_connection.make_BL_NW_2D_maps(pivot, chip, note, directory, stamp)
+            i2c_connection.make_BL_NW_1D_hists(data, chip, note, directory, stamp)
     finally:
         # The acquisition helpers keep figures open for interactive use. A
         # historical batch must release them after each 256-pixel scan.
@@ -147,8 +151,13 @@ def draw_iv(rows: list[dict], directory: Path, *, sweep: str,
     if dry_run:
         print(f"Would draw: {path}")
         return 1
-    return int(plot_iv_curve(rows, path, chip_name=chip, save_notes=note,
-                             sweep=sweep) is not None)
+    import matplotlib as mpl
+
+    # Reproduce the SMU script's fresh-process Matplotlib configuration even
+    # if another historical plot changed rcParams earlier in this process.
+    with mpl.rc_context(rc=mpl.rcParamsOrig):
+        return int(plot_iv_curve(rows, path, chip_name=chip, save_notes=note,
+                                 sweep=sweep) is not None)
 
 
 def main() -> int:
